@@ -61,52 +61,71 @@ def extract_invoice_number(df):
     Returns:
         Extracted invoice number or None if not found
     """
-    # First method: Try to locate cells with "Document Number" header and extract data
+    # Primary method: Look for "INVOICE N:" keyword as specified in requirements
+    invoice_n_keyword = 'invoice n:'
+    
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).lower()
+            if invoice_n_keyword in cell:
+                # Extract invoice number directly from this cell 
+                match = re.search(f"{invoice_n_keyword}[:\s°.]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
+                if match:
+                    invoice_num = match.group(1).strip()
+                    # Validate it follows the SIxxxxx pattern
+                    if re.match(r'^SI\d+$', invoice_num):
+                        return invoice_num
+                
+                # Check the cell to the right (common layout)
+                if j + 1 < len(df.columns):
+                    right_cell = str(df.iloc[i, j + 1])
+                    if right_cell and not 'nan' in right_cell:
+                        right_cell = right_cell.strip()
+                        if re.match(r'^SI\d+$', right_cell):
+                            return right_cell
+                
+                # Check the cell below (alternate layout)
+                if i + 1 < len(df):
+                    below_cell = str(df.iloc[i + 1, j])
+                    if below_cell and not 'nan' in below_cell:
+                        below_cell = below_cell.strip()
+                        if re.match(r'^SI\d+$', below_cell):
+                            return below_cell
+    
+    # Backup method 1: Look for cells with "Document Number" header and extract data
     # Look for a column header named "Document Number"
     for i in range(len(df)):
         for j in range(len(df.columns)):
-            if j + 1 < len(df.columns) and i + 1 < len(df):
-                cell = str(df.iloc[i, j]).lower()
-                if 'document number' in cell or 'document type' in cell:
-                    # Check if this is part of a table header row
-                    # Check adjacent columns for other header names like Document Type, Document Date, etc.
-                    header_row = True
-                    for k in range(1, min(5, len(df.columns) - j)):
-                        next_cell = str(df.iloc[i, j+k]).lower()
-                        if 'document' in next_cell or 'customer' in next_cell or 'currency' in next_cell:
-                            header_row = True
-                            break
-                    
-                    if header_row:
-                        # We found the header row, now get the invoice numbers from the column
-                        for row_idx in range(i+1, len(df)):
-                            doc_number = str(df.iloc[row_idx, j])
-                            if doc_number and doc_number != 'nan' and re.match(r'^SI\d+$', doc_number):
-                                return doc_number
+            cell = str(df.iloc[i, j]).lower()
+            if 'document number' in cell:
+                # We found the header, now get the invoice numbers from the column
+                for row_idx in range(i+1, min(i+20, len(df))):
+                    doc_number = str(df.iloc[row_idx, j])
+                    if doc_number and doc_number != 'nan' and re.match(r'^SI\d+$', doc_number):
+                        return doc_number
     
-    # Second method: Extract from the main data table
-    # First look for rows with Document Number or SI pattern
+    # Backup method 2: Extract from any cell with SI pattern
     si_pattern = r'SI\d+'
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j])
-            if re.match(si_pattern, cell):
-                return cell.strip()
+            match = re.search(si_pattern, cell)
+            if match:
+                return match.group(0).strip()
     
-    # Third method: Look for invoice number keywords
-    invoice_keywords = [
-        'invoice n', 'invoice no', 'invoice number', 'invoice #',
-        'inv', 'inv no', 'invoice', 'فاتورة رقم', 'رقم الفاتورة', '/invoice n'
+    # Backup method 3: Look for other invoice number keywords
+    other_invoice_keywords = [
+        'invoice no', 'invoice number', 'invoice #',
+        'inv', 'inv no', 'invoice', 'فاتورة رقم', 'رقم الفاتورة'
     ]
     
     # Search for each keyword in the dataframe
-    for keyword in invoice_keywords:
+    for keyword in other_invoice_keywords:
         for i in range(len(df)):
             for j in range(len(df.columns)):
                 cell = str(df.iloc[i, j]).lower()
                 if keyword.lower() in cell:
                     # Try to extract the invoice number from this cell or neighboring cells
-                    # First check if the number is in the same cell after the keyword
                     match = re.search(f"{keyword.lower()}[:\s°.]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
                     if match:
                         invoice_num = match.group(1).strip()
@@ -120,13 +139,6 @@ def extract_invoice_number(df):
                         if right_cell and not 'nan' in right_cell:
                             if re.match(r'^SI\d+$', right_cell.strip()):
                                 return right_cell.strip()
-                    
-                    # Check the cell below
-                    if i + 1 < len(df):
-                        below_cell = str(df.iloc[i + 1, j])
-                        if below_cell and not 'nan' in below_cell:
-                            if re.match(r'^SI\d+$', below_cell.strip()):
-                                return below_cell.strip()
     
     return None
 
@@ -140,11 +152,49 @@ def extract_customer_code(df):
     Returns:
         Extracted customer code or None if not found
     """
-    # First look in structured tables for a column header named "Customer Code"
+    # Primary method: Look for "partner code:" keyword as specified in requirements
+    partner_code_keyword = 'partner code:'
+    
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            if 'customer code' in cell or 'customer' in cell and 'code' in cell:
+            if partner_code_keyword in cell:
+                # Try to extract the customer code directly from this cell
+                match = re.search(f"{partner_code_keyword}[:\s]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
+                if match:
+                    code = match.group(1).strip()
+                    # Validate it follows the Cxxxx pattern
+                    if re.match(r'^C\d+$', code):
+                        return code
+                
+                # Check the cell to the right (common layout)
+                if j + 1 < len(df.columns):
+                    right_cell = str(df.iloc[i, j + 1])
+                    if right_cell and not 'nan' in right_cell:
+                        right_cell = right_cell.strip()
+                        if re.match(r'^C\d+$', right_cell):
+                            return right_cell
+                
+                # Check a few cells to the right (in case value is in a different column)
+                for k in range(2, min(5, len(df.columns) - j)):
+                    if j + k < len(df.columns):
+                        far_right_cell = str(df.iloc[i, j + k])
+                        if far_right_cell and not 'nan' in far_right_cell and re.match(r'^C\d+$', far_right_cell.strip()):
+                            return far_right_cell.strip()
+                
+                # Check the cell below (alternate layout)
+                if i + 1 < len(df):
+                    below_cell = str(df.iloc[i + 1, j])
+                    if below_cell and not 'nan' in below_cell:
+                        below_cell = below_cell.strip()
+                        if re.match(r'^C\d+$', below_cell):
+                            return below_cell
+    
+    # Backup method 1: Look for "Customer Code" column in structured tables
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).lower()
+            if 'customer code' in cell:
                 # Look for C-prefixed codes in the column below
                 for row_idx in range(i+1, min(i+20, len(df))):
                     code_value = str(df.iloc[row_idx, j])
@@ -152,47 +202,32 @@ def extract_customer_code(df):
                     if re.match(r'^C\d+$', code_value):
                         return code_value
                 
-                # If not found in exact column, check the one to the right
+                # Check the column to the right if not found directly below
                 if j + 1 < len(df.columns):
                     for row_idx in range(i+1, min(i+20, len(df))):
                         code_value = str(df.iloc[row_idx, j+1])
                         if re.match(r'^C\d+$', code_value):
                             return code_value
     
-    # Keywords that might precede a customer code
-    customer_keywords = [
-        'partner code', 'customer code', 'client code', 'account code',
-        'partner id', 'customer id', 'client id', 'customer', 'partner details',
-        'رمز العميل', 'كود العميل', 'رقم العميل', 'partner code :'
+    # Backup method 2: Look for other customer code indicators
+    other_code_keywords = [
+        'customer code', 'client code', 'account code', 'partner id',
+        'رمز العميل', 'كود العميل', 'رقم العميل', 'partner code :',
+        'partner details'
     ]
     
     # Search for each keyword in the dataframe
-    for keyword in customer_keywords:
+    for keyword in other_code_keywords:
         for i in range(len(df)):
             for j in range(len(df.columns)):
                 cell = str(df.iloc[i, j]).lower()
                 if keyword.lower() in cell:
-                    # Try to extract the customer code from this cell or neighboring cells
-                    # First check if the code is in the same cell after the keyword
-                    match = re.search(f"{keyword.lower()}[:\s]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
-                    if match:
-                        code = match.group(1).strip()
-                        # Check if it looks like a customer code (C followed by numbers)
-                        if re.match(r'^C\d+$', code):
-                            return code
-                    
+                    # Try to extract from nearby cells
                     # Check the cell to the right
                     if j + 1 < len(df.columns):
                         right_cell = str(df.iloc[i, j + 1])
                         if right_cell and not 'nan' in right_cell and re.match(r'^C\d+$', right_cell.strip()):
                             return right_cell.strip()
-                    
-                    # Check a few cells to the right (sometimes there are multiple columns between label and value)
-                    for k in range(2, min(5, len(df.columns) - j)):
-                        if j + k < len(df.columns):
-                            far_right_cell = str(df.iloc[i, j + k])
-                            if far_right_cell and not 'nan' in far_right_cell and re.match(r'^C\d+$', far_right_cell.strip()):
-                                return far_right_cell.strip()
                     
                     # Check the cell below
                     if i + 1 < len(df):
@@ -200,13 +235,14 @@ def extract_customer_code(df):
                         if below_cell and not 'nan' in below_cell and re.match(r'^C\d+$', below_cell.strip()):
                             return below_cell.strip()
     
-    # If no customer code found with C prefix, look for just customer code patterns
+    # Backup method 3: Search for any C-prefixed code in the document
     c_pattern = r'C\d+'
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j])
-            if re.match(c_pattern, cell):
-                return cell.strip()
+            match = re.search(c_pattern, cell)
+            if match and re.match(r'^C\d+$', match.group(0)):
+                return match.group(0).strip()
     
     return None
 

@@ -133,14 +133,21 @@ with st.expander("About this app"):
     
     ### Data Extraction Details
     
-    The app looks for the following information:
+    The app extracts information using exact patterns from your invoice files:
     
-    - **Invoice Number:** Found near keywords like "INVOICE N:" or similar
-    - **Document Date:** Found near keywords like "date" or similar
-    - **Customer Code:** Found near keywords like "partner code:" or similar
-    - **Currency:** Detected if available near price fields
-    - **Product Details:** Extracted from tables with headers in Arabic or English:
+    - **Invoice Number:** Found after "INVOICE N:" keywords with format SIxxxxx
+    - **Document Date:** Extracted in MM/DD/YYYY format (example: 4/16/2025)
+    - **Customer Code:** Found near "partner code:" with format Cxxxx
+    - **Currency:** Standardized as EGP or USD based on content
+    - **Product Details:** Extracted from tables with both Arabic and English headers:
         - Description (التسمية or Description)
         - Quantity (الكمية or Quantity)
         - Unit Price (سعر الوحدة or Unit price)
+    
+    ### Field Handling
+    
+    - Numeric fields use 0 as default when not found (Exchange Rate, Extra Discount)
+    - Text fields are left empty when not found (Activity Code)
+    - All data is output in two sheets: "Header" sheet and "Items" sheet
+    - Document Numbers link Header entries to their corresponding Item rows
     """)
