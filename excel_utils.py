@@ -73,10 +73,14 @@ def create_output_excel(processed_invoices, template_file=None):
         # Add product rows for this invoice
         if 'products' in invoice and invoice['products']:
             for product in invoice['products']:
+                # Use document_number from product if available (from the structured table extraction)
+                # Otherwise use the invoice's invoice_number
+                doc_number = product.get('document_number', invoice.get('invoice_number', ''))
+                
                 items_sheet.append([
-                    invoice.get('invoice_number', ''),  # Document Number (links to header)
+                    doc_number,  # Document Number (links to header)
                     product.get('description', ''),  # Description
-                    "",  # Unit Type (leave blank if not found as per requirements)
+                    product.get('unit_type', ''),  # Unit Type (leave blank if not found as per requirements)
                     product.get('quantity', ''),  # Quantity
                     product.get('unit_price', ''),  # Unit Price
                     "0",  # Discount Amount (default to 0 as per requirements)
