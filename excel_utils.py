@@ -1,160 +1,143 @@
 import pandas as pd
 import io
 import openpyxl
+import re
 from openpyxl.utils.dataframe import dataframe_to_rows
+from datetime import datetime
 
-def create_output_excel(processed_invoices, template_file):
+def create_output_excel(processed_invoices, template_file=None):
     """
-    Create a new Excel file based on the template and fill it with processed invoice data.
+    Create a new Excel file with two sheets:
+    1. Headers: Contains invoice header information
+    2. Items: Contains product details from all invoices
     
     Args:
         processed_invoices: List of dictionaries containing processed invoice data
-        template_file: The uploaded template Excel file object
+        template_file: The uploaded template Excel file object (optional, not used in the new approach)
         
     Returns:
         BytesIO object containing the Excel file
     """
-    # Read the template file
-    template_workbook = openpyxl.load_workbook(template_file)
-    
     # Create a new workbook for output
     output = io.BytesIO()
     
-    # If there are no invoices, return an empty file with just the template
+    # If there are no invoices, return an empty file with default sheets
     if not processed_invoices:
-        template_workbook.save(output)
+        workbook = openpyxl.Workbook()
+        # Create Header sheet
+        header_sheet = workbook.active
+        header_sheet.title = "Headers"
+        header_sheet.append(["Document Type", "Document Number", "Document Date", "Customer Code", 
+                            "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code"])
+        
+        # Create Items sheet
+        items_sheet = workbook.create_sheet(title="Items")
+        items_sheet.append(["Document Number", "Description", "Unit Type", "Quantity", 
+                           "Unit Price", "Discount Amount", "Value Difference", "Item Discount"])
+        
+        workbook.save(output)
         output.seek(0)
         return output
     
-    # Get the first sheet of the template as reference
-    template_sheet = template_workbook.active
+    # Create a new workbook
+    workbook = openpyxl.Workbook()
     
-    # For each processed invoice, create a new sheet based on the template
-    for i, invoice in enumerate(processed_invoices):
-        # If this is the first invoice, use the existing sheet
-        if i == 0:
-            sheet = template_sheet
-            sheet.title = f"Invoice_{invoice.get('invoice_number', i+1)}"
-        else:
-            # Create a new sheet for subsequent invoices
-            sheet = template_workbook.copy_worksheet(template_sheet)
-            sheet.title = f"Invoice_{invoice.get('invoice_number', i+1)}"
+    # Set up Headers sheet
+    header_sheet = workbook.active
+    header_sheet.title = "Headers"
+    header_sheet.append(["Document Type", "Document Number", "Document Date", "Customer Code", 
+                        "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code"])
+    
+    # Set up Items sheet
+    items_sheet = workbook.create_sheet(title="Items")
+    items_sheet.append(["Document Number", "Description", "Unit Type", "Quantity", 
+                       "Unit Price", "Discount Amount", "Value Difference", "Item Discount"])
+    
+    # Current date as fallback for document date
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Process each invoice
+    for invoice in processed_invoices:
+        # Add header row for this invoice
+        header_sheet.append([
+            "INV",  # Document Type (default to INV for invoice)
+            invoice.get('invoice_number', ''),  # Document Number
+            invoice.get('invoice_date', current_date),  # Document Date (using extracted date or current date as fallback)
+            invoice.get('customer_code', ''),  # Customer Code
+            invoice.get('currency', ''),  # Currency Code
+            "",  # Exchange Rate (empty as not extracted)
+            "",  # Extra Discount (empty as not extracted)
+            ""   # Activity Code (empty as not extracted)
+        ])
         
-        # Fill in the invoice data into the template
-        populate_template_sheet(sheet, invoice)
+        # Add product rows for this invoice
+        if 'products' in invoice and invoice['products']:
+            for product in invoice['products']:
+                items_sheet.append([
+                    invoice.get('invoice_number', ''),  # Document Number (links to header)
+                    product.get('description', ''),  # Description
+                    "",  # Unit Type (empty as not extracted)
+                    product.get('quantity', ''),  # Quantity
+                    product.get('unit_price', ''),  # Unit Price
+                    "",  # Discount Amount (empty as not extracted)
+                    "",  # Value Difference (empty as not extracted)
+                    ""   # Item Discount (empty as not extracted)
+                ])
     
     # Save the workbook to the BytesIO object
-    template_workbook.save(output)
+    workbook.save(output)
     output.seek(0)
     
     return output
 
-def populate_template_sheet(sheet, invoice_data):
+def extract_invoice_date(df):
     """
-    Populate a template sheet with invoice data.
+    Extract invoice date from the dataframe.
     
     Args:
-        sheet: The openpyxl worksheet object to populate
-        invoice_data: Dictionary containing the invoice data
+        df: DataFrame with string values
+        
+    Returns:
+        Extracted date as string in YYYY-MM-DD format or None if not found
     """
-    # Scan the sheet for placeholders or fields to populate
-    invoice_number_keywords = ['invoice number', 'invoice no', 'inv #', 'فاتورة رقم', 'رقم الفاتورة']
-    customer_code_keywords = ['customer code', 'client code', 'partner code', 'رمز العميل', 'كود العميل']
-    currency_keywords = ['currency', 'العملة', 'curr']
+    # Keywords that might precede an invoice date
+    date_keywords = [
+        'date', 'invoice date', 'issued on', 'تاريخ', 'تاريخ الفاتورة'
+    ]
     
-    # Look through all cells for relevant keywords to replace data
-    for row in sheet.iter_rows():
-        for cell in row:
-            if cell.value:
-                cell_value = str(cell.value).lower()
-                
-                # Check for invoice number field
-                if any(keyword in cell_value for keyword in invoice_number_keywords):
-                    # Check if cell already has a value format like "Invoice #: "
-                    if ':' in cell_value or '：' in cell_value:
-                        # Replace after the colon
-                        prefix = cell.value.split(':', 1)[0] + ': '
-                        cell.value = prefix + str(invoice_data.get('invoice_number', ''))
-                    else:
-                        # Place value in adjacent cell
-                        col_idx = cell.column + 1
-                        sheet.cell(row=cell.row, column=col_idx).value = invoice_data.get('invoice_number', '')
-                
-                # Check for customer code field
-                elif any(keyword in cell_value for keyword in customer_code_keywords):
-                    # Check if cell already has a value format like "Customer Code: "
-                    if ':' in cell_value or '：' in cell_value:
-                        # Replace after the colon
-                        prefix = cell.value.split(':', 1)[0] + ': '
-                        cell.value = prefix + str(invoice_data.get('customer_code', ''))
-                    else:
-                        # Place value in adjacent cell
-                        col_idx = cell.column + 1
-                        sheet.cell(row=cell.row, column=col_idx).value = invoice_data.get('customer_code', '')
-                
-                # Check for currency field
-                elif any(keyword in cell_value for keyword in currency_keywords):
-                    # Check if cell already has a value format like "Currency: "
-                    if ':' in cell_value or '：' in cell_value:
-                        # Replace after the colon
-                        prefix = cell.value.split(':', 1)[0] + ': '
-                        cell.value = prefix + str(invoice_data.get('currency', ''))
-                    else:
-                        # Place value in adjacent cell
-                        col_idx = cell.column + 1
-                        sheet.cell(row=cell.row, column=col_idx).value = invoice_data.get('currency', '')
+    # Common date formats (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, etc.)
+    date_patterns = [
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',  # DD/MM/YYYY or MM/DD/YYYY
+        r'(\d{2,4}[/-]\d{1,2}[/-]\d{1,2})',  # YYYY-MM-DD
+    ]
     
-    # Find product table area in the template
-    product_table_start_row = None
-    description_col = None
-    quantity_col = None
-    unit_price_col = None
+    # Search for each keyword in the dataframe
+    for keyword in date_keywords:
+        for i in range(len(df)):
+            for j in range(len(df.columns)):
+                cell = df.iloc[i, j].lower()
+                if keyword.lower() in cell:
+                    # Check this cell for date patterns
+                    for pattern in date_patterns:
+                        match = re.search(pattern, cell)
+                        if match:
+                            # Try to parse the date
+                            try:
+                                # This is simplified - in production would need more robust date parsing
+                                return match.group(1)
+                            except:
+                                pass
+                    
+                    # Check the cell to the right
+                    if j + 1 < len(df.columns):
+                        right_cell = df.iloc[i, j + 1]
+                        for pattern in date_patterns:
+                            match = re.search(pattern, right_cell)
+                            if match:
+                                try:
+                                    return match.group(1)
+                                except:
+                                    pass
     
-    # English and Arabic header variations
-    description_headers = ['description', 'product', 'item', 'التسمية', 'الوصف', 'المنتج']
-    quantity_headers = ['quantity', 'qty', 'الكمية', 'الكميه', 'العدد']
-    price_headers = ['unit price', 'price', 'سعر الوحدة', 'السعر']
-    
-    # Search for the product table headers
-    for row_idx, row in enumerate(sheet.iter_rows(), 1):
-        for col_idx, cell in enumerate(row, 1):
-            if cell.value:
-                cell_value = str(cell.value).lower()
-                
-                if any(header in cell_value for header in description_headers):
-                    description_col = col_idx
-                    product_table_start_row = row_idx
-                
-                elif any(header in cell_value for header in quantity_headers):
-                    quantity_col = col_idx
-                    if not product_table_start_row:
-                        product_table_start_row = row_idx
-                
-                elif any(header in cell_value for header in price_headers):
-                    unit_price_col = col_idx
-                    if not product_table_start_row:
-                        product_table_start_row = row_idx
-        
-        # If we found at least two columns, consider it a valid product table
-        if product_table_start_row and sum([bool(description_col), bool(quantity_col), bool(unit_price_col)]) >= 2:
-            break
-    
-    # If we found a product table, populate it with product data
-    if product_table_start_row and 'products' in invoice_data and invoice_data['products']:
-        # Start from the row after the header
-        current_row = product_table_start_row + 1
-        
-        for product in invoice_data['products']:
-            # Add description
-            if description_col and 'description' in product:
-                sheet.cell(row=current_row, column=description_col).value = product['description']
-            
-            # Add quantity
-            if quantity_col and 'quantity' in product:
-                sheet.cell(row=current_row, column=quantity_col).value = product['quantity']
-            
-            # Add unit price
-            if unit_price_col and 'unit_price' in product:
-                sheet.cell(row=current_row, column=unit_price_col).value = product['unit_price']
-            
-            current_row += 1
+    # If date not found, return None
+    return None

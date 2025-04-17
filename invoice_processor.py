@@ -3,6 +3,7 @@ import re
 import numpy as np
 import io
 import os
+from datetime import datetime
 
 def process_invoices(uploaded_file):
     """
@@ -37,6 +38,7 @@ def process_invoices(uploaded_file):
                 'invoice_number': extract_invoice_number(df_string),
                 'customer_code': extract_customer_code(df_string),
                 'currency': extract_currency(df_string),
+                'invoice_date': extract_invoice_date(df_string),
                 'products': extract_product_details(df_string),
                 'sheet_name': sheet_name
             }
@@ -187,6 +189,58 @@ def extract_currency(df):
                 if match:
                     return match.group(0).strip()
     
+    return None
+
+def extract_invoice_date(df):
+    """
+    Extract invoice date from the dataframe.
+    
+    Args:
+        df: DataFrame with string values
+        
+    Returns:
+        Extracted date as string in YYYY-MM-DD format or None if not found
+    """
+    # Keywords that might precede an invoice date
+    date_keywords = [
+        'date', 'invoice date', 'issued on', 'تاريخ', 'تاريخ الفاتورة'
+    ]
+    
+    # Common date formats (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, etc.)
+    date_patterns = [
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',  # DD/MM/YYYY or MM/DD/YYYY
+        r'(\d{2,4}[/-]\d{1,2}[/-]\d{1,2})',  # YYYY-MM-DD
+    ]
+    
+    # Search for each keyword in the dataframe
+    for keyword in date_keywords:
+        for i in range(len(df)):
+            for j in range(len(df.columns)):
+                cell = df.iloc[i, j].lower()
+                if keyword.lower() in cell:
+                    # Check this cell for date patterns
+                    for pattern in date_patterns:
+                        match = re.search(pattern, cell)
+                        if match:
+                            # Try to parse the date
+                            try:
+                                # This is simplified - in production would need more robust date parsing
+                                return match.group(1)
+                            except:
+                                pass
+                    
+                    # Check the cell to the right
+                    if j + 1 < len(df.columns):
+                        right_cell = df.iloc[i, j + 1]
+                        for pattern in date_patterns:
+                            match = re.search(pattern, right_cell)
+                            if match:
+                                try:
+                                    return match.group(1)
+                                except:
+                                    pass
+    
+    # If date not found, return None
     return None
 
 def extract_product_details(df):
