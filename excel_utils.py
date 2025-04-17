@@ -26,7 +26,7 @@ def create_output_excel(processed_invoices, template_file=None):
         workbook = openpyxl.Workbook()
         # Create Header sheet
         header_sheet = workbook.active
-        header_sheet.title = "Headers"
+        header_sheet.title = "Header"
         header_sheet.append(["Document Type", "Document Number", "Document Date", "Customer Code", 
                             "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code"])
         
@@ -44,7 +44,7 @@ def create_output_excel(processed_invoices, template_file=None):
     
     # Set up Headers sheet
     header_sheet = workbook.active
-    header_sheet.title = "Headers"
+    header_sheet.title = "Header"
     header_sheet.append(["Document Type", "Document Number", "Document Date", "Customer Code", 
                         "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code"])
     
@@ -60,14 +60,14 @@ def create_output_excel(processed_invoices, template_file=None):
     for invoice in processed_invoices:
         # Add header row for this invoice
         header_sheet.append([
-            "INV",  # Document Type (default to INV for invoice)
+            "I",  # Document Type (Always "I" as per requirements)
             invoice.get('invoice_number', ''),  # Document Number
             invoice.get('invoice_date', current_date),  # Document Date (using extracted date or current date as fallback)
             invoice.get('customer_code', ''),  # Customer Code
             invoice.get('currency', ''),  # Currency Code
-            "",  # Exchange Rate (empty as not extracted)
-            "",  # Extra Discount (empty as not extracted)
-            ""   # Activity Code (empty as not extracted)
+            "0",  # Exchange Rate (default to 0 as per requirements)
+            "0",  # Extra Discount (default to 0 as per requirements)
+            ""   # Activity Code (empty if not available as per requirements)
         ])
         
         # Add product rows for this invoice
@@ -76,12 +76,12 @@ def create_output_excel(processed_invoices, template_file=None):
                 items_sheet.append([
                     invoice.get('invoice_number', ''),  # Document Number (links to header)
                     product.get('description', ''),  # Description
-                    "",  # Unit Type (empty as not extracted)
+                    "",  # Unit Type (leave blank if not found as per requirements)
                     product.get('quantity', ''),  # Quantity
                     product.get('unit_price', ''),  # Unit Price
-                    "",  # Discount Amount (empty as not extracted)
-                    "",  # Value Difference (empty as not extracted)
-                    ""   # Item Discount (empty as not extracted)
+                    "0",  # Discount Amount (default to 0 as per requirements)
+                    "0",  # Value Difference (default to 0 as per requirements)
+                    "0"   # Item Discount (default to 0 as per requirements)
                 ])
     
     # Save the workbook to the BytesIO object

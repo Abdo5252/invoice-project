@@ -56,11 +56,14 @@ if uploaded_messy_file:
                     for invoice in processed_data:
                         # Add header row
                         headers_data.append({
-                            "Document Type": "INV",
+                            "Document Type": "I",
                             "Document Number": invoice.get('invoice_number', ''),
                             "Document Date": invoice.get('invoice_date', ''),
                             "Customer Code": invoice.get('customer_code', ''),
-                            "Currency Code": invoice.get('currency', '')
+                            "Currency Code": invoice.get('currency', ''),
+                            "Exchange Rate": "0",
+                            "Extra Discount": "0",
+                            "Activity Code": ""
                         })
                         
                         # Add product rows
@@ -69,15 +72,19 @@ if uploaded_messy_file:
                                 items_data.append({
                                     "Document Number": invoice.get('invoice_number', ''),
                                     "Description": product.get('description', ''),
+                                    "Unit Type": "",
                                     "Quantity": product.get('quantity', ''),
-                                    "Unit Price": product.get('unit_price', '')
+                                    "Unit Price": product.get('unit_price', ''),
+                                    "Discount Amount": "0",
+                                    "Value Difference": "0",
+                                    "Item Discount": "0"
                                 })
                     
                     # Display extracted data overview
                     st.subheader("Extracted Data Preview")
                     
                     # Display Headers tab
-                    tab1, tab2 = st.tabs(["Headers", "Items"])
+                    tab1, tab2 = st.tabs(["Header", "Items"])
                     
                     with tab1:
                         st.write("### Invoice Headers")
@@ -121,8 +128,8 @@ with st.expander("About this app"):
     1. Upload your messy Excel file containing multiple sheets with invoice data
     2. Click "Process Invoices" to extract and format the data
     3. Download the resulting Excel file with two sheets:
-       - **Headers sheet**: Contains all invoice headers
-       - **Items sheet**: Contains all product items from all invoices
+       - **Header sheet**: Contains all invoice headers with Document Type, Number, Date, etc.
+       - **Items sheet**: Contains all product items from all invoices linked by Document Number
     
     ### Data Extraction Details
     
