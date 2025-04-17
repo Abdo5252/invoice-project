@@ -249,12 +249,13 @@ def extract_customer_code(df):
 def extract_currency(df):
     """
     Extract currency information from the dataframe.
+    ONLY returns EGP or USD as specified in the requirements.
     
     Args:
         df: DataFrame with string values
         
     Returns:
-        Extracted currency or None if not found
+        'EGP' or 'USD' only, with EGP as default
     """
     # First method: Look for the "Currency Code" column in a structured table
     for i in range(len(df)):
@@ -263,73 +264,53 @@ def extract_currency(df):
             if 'currency code' in cell:
                 # Look for currency codes in the column below
                 for row_idx in range(i+1, min(i+20, len(df))):
-                    curr_value = str(df.iloc[row_idx, j])
-                    # Check for common currency codes
-                    if curr_value in ['EGP', 'USD', 'EUR', 'GBP']:
+                    curr_value = str(df.iloc[row_idx, j]).strip().upper()
+                    # ONLY allow EGP or USD as specified in requirements
+                    if curr_value == 'EGP' or curr_value == 'USD':
                         return curr_value
                 
                 # If not found in the exact column, check the one to the right
                 if j + 1 < len(df.columns):
                     for row_idx in range(i+1, min(i+20, len(df))):
-                        curr_value = str(df.iloc[row_idx, j+1])
-                        if curr_value in ['EGP', 'USD', 'EUR', 'GBP']:
+                        curr_value = str(df.iloc[row_idx, j+1]).strip().upper()
+                        if curr_value == 'EGP' or curr_value == 'USD':
                             return curr_value
     
-    # Look for "EGYPT" as a hint for EGP currency
+    # Look specifically for dollar or USD mentions - they indicate USD currency
+    usd_indicators = ['$', 'dollar', 'usd', 'دولار', 'united states', 'u.s.']
     for i in range(len(df)):
         for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip().upper()
-            if cell == 'EGYPT':
+            cell = str(df.iloc[i, j]).lower()
+            if any(indicator in cell for indicator in usd_indicators):
+                return 'USD'
+    
+    # Look for Egypt mentions - they indicate EGP currency
+    egp_indicators = ['egypt', 'egyptian', 'egp', 'مصر', 'مصري', 'جنيه']
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).lower()
+            if any(indicator in cell for indicator in egp_indicators):
                 return 'EGP'
     
-    # Common currency symbols and names
-    currency_patterns = [
-        r'EGP', r'USD', r'EUR', r'GBP', r'JPY', r'AED', r'SAR',
-        r'\$', r'€', r'£', r'¥', 
-        r'dollar', r'euro', r'dirham', r'riyal',
-        r'دولار', r'يورو', r'درهم', r'ريال'
-    ]
-    
-    # Currency keywords that might be used
-    currency_keywords = [
-        'currency', 'العملة', 'curr.', 'curr', 'currency code',
-        'عملة', 'بعملة'
-    ]
-    
-    # Look for explicit currency indicators
-    for keyword in currency_keywords:
-        for i in range(len(df)):
-            for j in range(len(df.columns)):
-                cell = str(df.iloc[i, j]).lower()
-                if keyword.lower() in cell:
-                    # Try to extract the currency from this cell or neighboring cells
-                    for pattern in currency_patterns:
-                        match = re.search(pattern, cell, re.IGNORECASE)
-                        if match:
-                            curr = match.group(0).strip().upper()
-                            if curr in ['EGP', 'USD', 'EUR', 'GBP']:
-                                return curr
-                    
-                    # Check the cell to the right
-                    if j + 1 < len(df.columns):
-                        right_cell = str(df.iloc[i, j + 1])
-                        for pattern in currency_patterns:
-                            match = re.search(pattern, right_cell, re.IGNORECASE)
-                            if match:
-                                curr = match.group(0).strip().upper()
-                                if curr in ['EGP', 'USD', 'EUR', 'GBP']:
-                                    return curr
-    
-    # If no explicit currency indicator found, look for currency symbols in text
+    # Look for explicit currency keywords then check nearby cells
+    currency_keywords = ['currency', 'العملة', 'curr.', 'curr', 'currency code']
     for i in range(len(df)):
         for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j])
-            for pattern in currency_patterns:
-                match = re.search(pattern, cell, re.IGNORECASE)
-                if match:
-                    curr = match.group(0).strip().upper()
-                    if curr in ['EGP', 'USD', 'EUR', 'GBP']:
-                        return curr
+            cell = str(df.iloc[i, j]).lower()
+            if any(keyword in cell for keyword in currency_keywords):
+                # Check the cell itself
+                if 'usd' in cell or 'dollar' in cell or '$' in cell:
+                    return 'USD'
+                if 'egp' in cell or 'egypt' in cell:
+                    return 'EGP'
+                
+                # Check the cell to the right
+                if j + 1 < len(df.columns):
+                    right_cell = str(df.iloc[i, j + 1]).lower()
+                    if right_cell == 'usd' or right_cell == 'dollar' or right_cell == '$':
+                        return 'USD'
+                    if right_cell == 'egp' or right_cell == 'egypt':
+                        return 'EGP'
     
     # Default to EGP if no currency found (since most invoices in examples use EGP)
     return 'EGP'
@@ -418,6 +399,7 @@ def extract_invoice_date(df):
 def extract_product_details(df):
     """
     Extract product details from tables in the dataframe.
+    Focuses on extracting data that matches the exact format shown in examples.
     
     Args:
         df: DataFrame with string values
@@ -425,202 +407,283 @@ def extract_product_details(df):
     Returns:
         List of dictionaries containing product details
     """
-    # First method: Look for structured "Document Number" and "Description" columns in a table
-    # This is specifically designed to find the exact format shown in the example images
-    document_number_found = False
-    document_number_col = None
-    desc_col = None
-    qty_col = None
-    price_col = None
-    discount_col = None
+    # Method 1: Look for item tables with the specific headers from the example images
+    # First look for a table with standard headers in either English or Arabic
+    products = []
     
-    # First, try to find the exact table structure from the examples
+    # Try to find invoice tables with specific product data
+    # This first search targets the exact table structure seen in example image 1
     for i in range(len(df)):
-        row_values = [str(df.iloc[i, j]).strip() for j in range(min(10, len(df.columns)))]
-        row_text = ' '.join(row_values).lower()
-        
-        # Check if this is the header row of the items table from example 1
-        if ('document number' in row_text and 'description' in row_text and 
-            'quantity' in row_text and 'unit price' in row_text):
-            # Found the header row, now identify column indices
-            for j in range(len(df.columns)):
-                cell = str(df.iloc[i, j]).lower().strip()
-                if cell == 'document number':
-                    document_number_col = j
-                elif cell == 'description':
-                    desc_col = j
-                elif cell == 'quantity':
-                    qty_col = j
-                elif cell == 'unit price':
-                    price_col = j
-                elif 'discount' in cell and 'amount' in cell:
-                    discount_col = j
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).strip().lower()
             
-            # If found the key columns, process the items table
-            if desc_col is not None and document_number_col is not None and qty_col is not None:
-                document_number_found = True
+            # Look for tables with Document Number, Description, Quantity, and Unit Price headers
+            if ('document number' in cell) or ('description' in cell and j+3 < len(df.columns)):
+                # Search for a row that has these headers
                 header_row = i
-                current_row = header_row + 1
-                products = []
+                header_found = False
+                doc_num_col = None
+                desc_col = None
+                qty_col = None
+                price_col = None
+                unit_type_col = None
                 
-                # Process each row
-                while current_row < len(df):
-                    # Stop if we hit a blank row
-                    if all(str(df.iloc[current_row, j]).strip() == '' for j in range(min(10, len(df.columns)))):
-                        break
+                # Scan this row and nearby rows for headers
+                for scan_row in range(max(0, i-1), min(i+2, len(df))):
+                    for scan_col in range(len(df.columns)):
+                        scan_cell = str(df.iloc[scan_row, scan_col]).strip().lower()
+                        
+                        if scan_cell == 'document number':
+                            doc_num_col = scan_col
+                            header_found = True
+                        elif scan_cell == 'description':
+                            desc_col = scan_col
+                            header_found = True
+                        elif scan_cell == 'quantity':
+                            qty_col = scan_col
+                            header_found = True
+                        elif scan_cell == 'unit price':
+                            price_col = scan_col
+                            header_found = True
+                        elif scan_cell == 'unit type':
+                            unit_type_col = scan_col
+                
+                # If we found the headers from example image 1
+                if header_found and desc_col is not None and qty_col is not None:
+                    current_row = header_row + 1
+                    doc_products = []
                     
-                    # Get document number, description, quantity, price values
-                    doc_num = str(df.iloc[current_row, document_number_col]).strip()
-                    description = str(df.iloc[current_row, desc_col]).strip()
-                    
-                    if doc_num.startswith('SI') and description:
-                        # This is a valid product row
+                    # Process rows in this table
+                    while current_row < len(df) and current_row < header_row + 30:  # Limit search depth
+                        # Skip empty rows
+                        if all(str(df.iloc[current_row, k]).strip() == '' 
+                              for k in range(max(0, j-2), min(j+8, len(df.columns)))):
+                            current_row += 1
+                            continue
+                        
+                        # Get values from this row
+                        # For document number, either use the column or store from invoice
+                        doc_num = ''
+                        if doc_num_col is not None:
+                            doc_num = str(df.iloc[current_row, doc_num_col]).strip()
+                            
+                        # Description is required
+                        if desc_col is None:
+                            current_row += 1
+                            continue
+                            
+                        description = str(df.iloc[current_row, desc_col]).strip()
+                        
+                        # Skip if description is empty or looks like a header
+                        if not description or description.lower() in ['description', 'item', 'product', 'التسمية', 'الوصف']:
+                            current_row += 1
+                            continue
+                            
+                        # Create product entry
                         product = {
-                            'document_number': doc_num,
-                            'description': description
+                            'description': description,
                         }
+                        
+                        # Add document number if found
+                        if doc_num:
+                            product['document_number'] = doc_num
                         
                         # Get quantity if column exists
                         if qty_col is not None:
                             qty_str = str(df.iloc[current_row, qty_col]).strip()
-                            try:
-                                qty = float(qty_str.replace(',', ''))
-                                product['quantity'] = qty
-                            except:
-                                product['quantity'] = qty_str
+                            if qty_str and qty_str.lower() not in ['quantity', 'qty', 'الكمية']:
+                                try:
+                                    # Clean the quantity string and convert to float
+                                    qty_str = qty_str.replace(',', '')
+                                    qty = float(qty_str)
+                                    product['quantity'] = qty
+                                except:
+                                    product['quantity'] = qty_str
                         
                         # Get unit price if column exists
                         if price_col is not None:
                             price_str = str(df.iloc[current_row, price_col]).strip()
-                            try:
-                                price = float(price_str.replace(',', ''))
-                                product['unit_price'] = price
-                            except:
-                                product['unit_price'] = price_str
+                            if price_str and price_str.lower() not in ['unit price', 'price', 'سعر الوحدة']:
+                                try:
+                                    # Clean the price string and convert to float
+                                    price_str = price_str.replace(',', '')
+                                    price = float(price_str)
+                                    product['unit_price'] = price
+                                except:
+                                    product['unit_price'] = price_str
                         
-                        products.append(product)
+                        # Get unit type if column exists
+                        if unit_type_col is not None:
+                            unit_type = str(df.iloc[current_row, unit_type_col]).strip()
+                            if unit_type and unit_type.lower() not in ['unit type', 'unit', 'الوحدة']:
+                                product['unit_type'] = unit_type
+                        
+                        # Add the product if it has essential data
+                        if 'description' in product and (
+                            'quantity' in product or 'unit_price' in product
+                        ):
+                            doc_products.append(product)
+                        
+                        current_row += 1
                     
-                    current_row += 1
+                    # If we found products in this table, add them to the results
+                    if doc_products:
+                        products.extend(doc_products)
+                        # Return early if we've found products in the expected format
+                        return products
+    
+    # Method 2: Look for Arabic description tables (like in example image 4)
+    arabic_desc_found = False
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).strip().lower()
+            
+            # Look for Arabic description header
+            if 'التسمية' in cell or 'الوصف' in cell:
+                arabic_desc_found = True
+                desc_col = j
+                qty_col = None
+                price_col = None
                 
-                # If we found any products in this exact format, return them
-                if products:
-                    return products
+                # Look for quantity and price headers in this row
+                for k in range(len(df.columns)):
+                    cell_k = str(df.iloc[i, k]).strip().lower()
+                    if 'الكمية' in cell_k or 'العدد' in cell_k:
+                        qty_col = k
+                    elif 'سعر الوحدة' in cell_k or 'السعر' in cell_k:
+                        price_col = k
+                
+                # If we've found the key columns
+                if qty_col is not None or price_col is not None:
+                    # Process product rows
+                    current_row = i + 1
+                    arabic_products = []
+                    
+                    while current_row < len(df) and current_row < i + 30:  # Limit search depth
+                        # Check if this is a valid product row
+                        desc = str(df.iloc[current_row, desc_col]).strip()
+                        
+                        if desc and not any(header in desc.lower() for header in ['التسمية', 'الوصف', 'الكمية', 'سعر']):
+                            product = {'description': desc}
+                            
+                            # Get quantity
+                            if qty_col is not None:
+                                qty_str = str(df.iloc[current_row, qty_col]).strip()
+                                if qty_str and not any(h in qty_str.lower() for h in ['الكمية', 'quantity']):
+                                    try:
+                                        qty = float(qty_str.replace(',', ''))
+                                        product['quantity'] = qty
+                                    except:
+                                        product['quantity'] = qty_str
+                            
+                            # Get unit price
+                            if price_col is not None:
+                                price_str = str(df.iloc[current_row, price_col]).strip()
+                                if price_str and not any(h in price_str.lower() for h in ['سعر', 'price']):
+                                    try:
+                                        price = float(price_str.replace(',', ''))
+                                        product['unit_price'] = price
+                                    except:
+                                        product['unit_price'] = price_str
+                            
+                            # Add product if it has enough information
+                            if len(product) > 1:  # At least description and one other field
+                                arabic_products.append(product)
+                        
+                        current_row += 1
+                    
+                    # If we found products, add them to the results
+                    if arabic_products:
+                        products.extend(arabic_products)
+                        # Return early if we've found products matching Arabic format
+                        return products
     
-    # If we didn't find the exact format, try to locate tables with common headers
-    # English header variations
-    description_headers_en = ['description', 'product', 'item', 'service', 'detail', 'product description']
-    quantity_headers_en = ['quantity', 'qty', 'pcs', 'amount', 'count']
-    price_headers_en = ['unit price', 'price', 'rate', 'unit cost', 'price per unit', 'unit']
+    # Method 3: Generic method for finding product tables
+    # Use this as a fallback if specific formats weren't found
     
-    # Arabic header variations
-    description_headers_ar = ['التسمية', 'الوصف', 'المنتج', 'البند', 'الخدمة', 'التفاصيل']
-    quantity_headers_ar = ['الكمية', 'الكميه', 'العدد', 'قطع']
-    price_headers_ar = ['سعر الوحدة', 'السعر', 'التكلفة', 'سعر الوحده']
+    # Common headers in English and Arabic
+    desc_headers = ['description', 'item', 'product', 'التسمية', 'الوصف', 'المنتج']
+    qty_headers = ['quantity', 'qty', 'pcs', 'الكمية', 'العدد']
+    price_headers = ['unit price', 'price', 'سعر الوحدة', 'السعر']
     
-    # Combined headers
-    description_headers = description_headers_en + description_headers_ar
-    quantity_headers = quantity_headers_en + quantity_headers_ar
-    price_headers = price_headers_en + price_headers_ar
-    
-    # Find potential header rows
+    # Find rows that look like table headers
     header_rows = []
     for i in range(len(df)):
-        row = df.iloc[i]
-        desc_match = False
-        qty_match = False
-        price_match = False
+        header_count = 0
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).strip().lower()
+            if any(h in cell for h in desc_headers + qty_headers + price_headers):
+                header_count += 1
         
-        for j in range(len(row)):
-            cell = str(row[j]).lower()
-            
-            if any(header in cell for header in description_headers):
-                desc_match = True
-            if any(header in cell for header in quantity_headers):
-                qty_match = True
-            if any(header in cell for header in price_headers):
-                price_match = True
-        
-        # If row has at least two types of headers, consider it a potential header row
-        if sum([desc_match, qty_match, price_match]) >= 2:
+        # If this row has multiple headers, it's likely a product table header
+        if header_count >= 2:
             header_rows.append(i)
     
-    products = []
-    
-    # Process each potential table
+    # Process each potential header row
     for header_row in header_rows:
-        if header_row + 1 >= len(df):
-            continue
-            
-        # Find column indices for each field
+        # Find column indices for product data
         desc_col = None
         qty_col = None
         price_col = None
-        unit_col = None
         
         for j in range(len(df.columns)):
-            cell = str(df.iloc[header_row, j]).lower()
+            cell = str(df.iloc[header_row, j]).strip().lower()
             
-            if any(header in cell for header in description_headers):
+            if any(h in cell for h in desc_headers):
                 desc_col = j
-            if any(header in cell for header in quantity_headers):
+            elif any(h in cell for h in qty_headers):
                 qty_col = j
-            if any(header in cell for header in price_headers):
+            elif any(h in cell for h in price_headers):
                 price_col = j
-            if 'unit type' in cell or 'unit' in cell:
-                unit_col = j
         
-        # If we found at least description and one other column
+        # If we found key columns, process product data
         if desc_col is not None and (qty_col is not None or price_col is not None):
-            # Extract products from rows following the header
             current_row = header_row + 1
+            fallback_products = []
             
-            while current_row < len(df):
-                # If row is empty or contains header-like content, stop extraction
-                if all(str(cell) == '' or 'nan' in str(cell) for cell in df.iloc[current_row]):
-                    break
+            while current_row < len(df) and current_row < header_row + 30:
+                # Get product data
+                desc = str(df.iloc[current_row, desc_col]).strip()
                 
-                # If row has potential headers, stop extraction
-                if any(header in str(df.iloc[current_row, j]).lower() 
-                       for j in range(len(df.columns)) 
-                       for header in description_headers + quantity_headers + price_headers):
-                    break
+                # Skip empty rows or header-like rows
+                if not desc or any(h in desc.lower() for h in desc_headers + qty_headers + price_headers):
+                    current_row += 1
+                    continue
                 
-                # Extract product data
-                product = {}
+                product = {'description': desc}
                 
-                if desc_col is not None:
-                    product['description'] = str(df.iloc[current_row, desc_col]).strip()
-                
+                # Get quantity if available
                 if qty_col is not None:
-                    qty = str(df.iloc[current_row, qty_col]).strip()
-                    # Try to convert to numeric if possible
-                    try:
-                        qty = float(qty.replace(',', ''))
-                    except:
-                        pass
-                    product['quantity'] = qty
-                
-                if price_col is not None:
-                    price = str(df.iloc[current_row, price_col]).strip()
-                    # Extract numeric part if it contains currency symbols
-                    price_match = re.search(r'([0-9,.]+)', price)
-                    if price_match:
+                    qty_str = str(df.iloc[current_row, qty_col]).strip()
+                    if qty_str and not any(h in qty_str.lower() for h in qty_headers):
                         try:
-                            price = float(price_match.group(1).replace(',', ''))
+                            qty = float(qty_str.replace(',', ''))
+                            product['quantity'] = qty
                         except:
-                            pass
-                    product['unit_price'] = price
+                            product['quantity'] = qty_str
                 
-                if unit_col is not None:
-                    product['unit_type'] = str(df.iloc[current_row, unit_col]).strip()
+                # Get price if available
+                if price_col is not None:
+                    price_str = str(df.iloc[current_row, price_col]).strip()
+                    if price_str and not any(h in price_str.lower() for h in price_headers):
+                        try:
+                            price = float(price_str.replace(',', ''))
+                            product['unit_price'] = price
+                        except:
+                            product['unit_price'] = price_str
                 
-                # Only add product if it has a description and at least one other field
-                if product.get('description') and (product.get('quantity') is not None or product.get('unit_price') is not None):
-                    # Skip if description is just a placeholder or seems like a header
-                    if not any(header in product['description'].lower() 
-                              for header in description_headers + quantity_headers + price_headers):
-                        products.append(product)
+                # Add product if it has enough information
+                if len(product) > 1:
+                    fallback_products.append(product)
                 
                 current_row += 1
+            
+            # If we found products, add them to the results
+            if fallback_products:
+                products.extend(fallback_products)
+                # Return if we found products with this fallback method
+                if len(products) > 0:
+                    return products
     
+    # Return whatever products we found, or empty list if none
     return products
