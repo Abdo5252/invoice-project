@@ -72,7 +72,7 @@ def extract_invoice_number(df):
             cell = str(df.iloc[i, j]).lower()
             if invoice_n_keyword in cell:
                 # Extract invoice number directly from this cell 
-                match = re.search(f"{invoice_n_keyword}[:\s°.]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
+                match = re.search(f"{invoice_n_keyword}[:\\s°.]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
                 if match:
                     invoice_num = match.group(1).strip()
                     # Validate it follows the SIxxxxx pattern
@@ -129,7 +129,7 @@ def extract_invoice_number(df):
                 cell = str(df.iloc[i, j]).lower()
                 if keyword.lower() in cell:
                     # Try to extract the invoice number from this cell or neighboring cells
-                    match = re.search(f"{keyword.lower()}[:\s°.]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
+                    match = re.search(f"{keyword.lower()}[:\\s°.]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
                     if match:
                         invoice_num = match.group(1).strip()
                         # Check if it looks like an SI invoice number
@@ -163,7 +163,7 @@ def extract_customer_code(df):
             cell = str(df.iloc[i, j]).lower()
             if partner_code_keyword in cell:
                 # Try to extract the customer code directly from this cell
-                match = re.search(f"{partner_code_keyword}[:\s]*([a-zA-Z0-9\-/]+)", cell, re.IGNORECASE)
+                match = re.search(f"{partner_code_keyword}[:\\s]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
                 if match:
                     code = match.group(1).strip()
                     # Validate it follows the Cxxxx pattern
@@ -413,90 +413,338 @@ def extract_product_details(df, invoice_number=None):
     """
     products = []
 
-    # Look for "Invoice details" section which contains the product table
+    # Method 1: Look for "Invoice details" section which contains the product table
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).strip().lower()
             if 'invoice details' in cell:
                 # Found the product table header, look for column headers in next rows
-                header_row = i + 1
+                header_row = i
+                item_code_col = None
                 desc_col = None
                 qty_col = None
                 price_col = None
+                amount_col = None
 
-                # Look for column headers in the next few rows
-                for row in range(header_row, min(header_row + 3, len(df))):
-                    for col in range(len(df.columns)):
-                        header = str(df.iloc[row, col]).strip().lower()
-                        if 'description' in header:
-                            desc_col = col
-                        elif any(x in header for x in ['quantity', 'qty']):
-                            qty_col = col
-                        elif 'unit price' in header:
-                            price_col = col
+                # Search for headers in the rows below (check next 5 rows for flexibility)
+                for row_idx in range(header_row + 1, min(header_row + 6, len(df))):
+                    for col_idx in range(len(df.columns)):
+                        header_text = str(df.iloc[row_idx, col_idx]).strip().lower()
 
-                # If we found the columns, start extracting products
-                if desc_col is not None and (qty_col is not None or price_col is not None):
-                    current_row = row + 1
+                        # Check for different header possibilities (English/Arabic)
+                        if 'code' in header_text or 'item code' in header_text or 'رمز' in header_text:
+                            item_code_col = col_idx
+                        elif 'description' in header_text or 'desc' in header_text or 'وصف' in header_text or 'التسمية' in header_text:
+                            desc_col = col_idx
+                        elif 'quantity' in header_text or 'qty' in header_text or 'الكمية' in header_text:
+                            qty_col = col_idx
+                        elif ('unit' in header_text and 'price' in header_text) or 'سعر الوحدة' in header_text:
+                            price_col = col_idx
+                        elif 'amount' in header_text or 'المبلغ' in header_text:
+                            amount_col = col_idx
 
-                    # Process rows until we hit an empty row or obvious end markers
-                    while current_row < len(df):
-                        desc = str(df.iloc[current_row, desc_col]).strip()
+                # If we found at least description column and one numeric column
+                if desc_col is not None and (qty_col is not None or price_col is not None or amount_col is not None):
+                    # Start parsing from the row after the headers
+                    data_start_row = row_idx + 1
+                    table_products = []
 
-                        # Skip empty rows or header-like content
-                        if not desc or desc.lower() in ['description', 'total', 'amount']:
-                            current_row += 1
+                    # Process rows until we hit the end
+                    for data_row in range(data_start_row, len(df)):
+                        # Get description - this is the key field to identify a product row
+                        try:
+                            desc_text = str(df.iloc[data_row, desc_col]).strip()
+                        except:
+                            continue  # Skip if there's an error accessing this cell
+
+                        # Skip empty, header-like rows, or payment terms
+                        if (not desc_text or 
+                            desc_text.lower() in ['description', 'total', 'amount', 'وصف', 'المجموع'] or
+                            'ÔÑæØ ÇáÏÝÚ' in desc_text or 
+                            'term of payment' in desc_text.lower()):
                             continue
 
-                        product = {'description': desc}
+                        # More flexible detection of total weight and package lines
+                        desc_lower = desc_text.lower().strip()
+                        desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
+                        if any(kw in desc_clean for kw in [
+                            'total weight', 
+                            'total package',
+                            'total weight ',
+                            'total package ',
+                            'total weight in',
+                            'total package in',
+                            'total weight kg',
+                            'total package kg'
+                        ]):
+                            # Add as a special product with quantity=1 and price=0
+                            product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                            table_products.append(product)
+                            continue
 
-                        # Extract quantity if column exists
+                        # Create product entry
+                        product = {'description': desc_text, 'invoice_number': invoice_number}
+
+                        # Add item code if available
+                        if item_code_col is not None:
+                            try:
+                                code = str(df.iloc[data_row, item_code_col]).strip()
+                                if code and code.lower() != 'nan':
+                                    product['item_code'] = code
+                            except:
+                                pass
+
+                        # Add quantity if available
                         if qty_col is not None:
-                            qty_str = str(df.iloc[current_row, qty_col]).strip()
                             try:
-                                qty = float(qty_str.replace(',', ''))
-                                if qty > 0:
-                                    product['quantity'] = qty
+                                qty_text = str(df.iloc[data_row, qty_col]).strip().replace(',', '')
+                                if qty_text and qty_text.lower() != 'nan':
+                                    try:
+                                        qty_value = float(qty_text)
+                                        product['quantity'] = qty_value
+                                    except:
+                                        # Keep as string if conversion fails
+                                        product['quantity'] = qty_text
                             except:
                                 pass
 
-                        # Extract unit price if column exists
+                        # Add unit price if available
                         if price_col is not None:
-                            price_str = str(df.iloc[current_row, price_col]).strip()
                             try:
-                                price = float(price_str.replace(',', ''))
-                                if price > 0:
-                                    product['unit_price'] = price
+                                price_text = str(df.iloc[data_row, price_col]).strip().replace(',', '')
+                                if price_text and price_text.lower() != 'nan':
+                                    try:
+                                        price_value = float(price_text)
+                                        product['unit_price'] = price_value
+                                    except:
+                                        # Keep as string if conversion fails
+                                        product['unit_price'] = price_text
                             except:
                                 pass
 
-                        # Add product if we have enough data
-                        if len(product) > 1:  # Must have description and at least one other field
-                            product['invoice_number'] = invoice_number
-                            products.append(product)
+                        # If we have at least description and one numeric field, add the product
+                        if len(product) > 2:  # More than just description and invoice_number
+                            table_products.append(product)
 
-                        current_row += 1
+                    # If we found products, add them to the results
+                    if table_products:
+                        products.extend(table_products)
 
-                        # Stop if we hit "Amount excluding Value Added Tax" or similar
-                        if current_row < len(df):
-                            next_row = str(df.iloc[current_row, desc_col]).strip().lower()
-                            if 'amount' in next_row and 'tax' in next_row:
-                                break
+    # Method 2: Look for tables with common headers like Description/Quantity/Price
+    if not products:  # Only if we haven't found products yet
+        # Common header texts in English and Arabic
+        desc_headers = ['description', 'item description', 'product', 'desc', 'التسمية', 'الوصف', 'المنتج']
+        qty_headers = ['quantity', 'qty', 'الكمية', 'العدد']
+        price_headers = ['unit price', 'price', 'unit cost', 'سعر الوحدة', 'السعر']
 
-                    # If we found products, return them
-                    if products:
-                        return products
+        # Scan for header rows
+        for i in range(len(df)):
+            header_matches = 0
+            header_cols = {}
 
-    #Fallback to the original method if no structured table is found.
-    products = []
+            # Check if this row contains typical header text
+            for j in range(len(df.columns)):
+                cell_text = str(df.iloc[i, j]).strip().lower()
 
-    # Look for English headers only
-    header_keywords = {
-        'description': ['description', 'item', 'product', 'desc'],
-        'quantity': ['quantity', 'qty', 'amount', 'pcs'],
-        'price': ['unit price', 'price', 'amount', 'unit cost']
-    }
+                # Check for description header
+                if any(h in cell_text for h in desc_headers):
+                    header_cols['description'] = j
+                    header_matches += 1
+                # Check for quantity header
+                elif any(h in cell_text for h in qty_headers):
+                    header_cols['quantity'] = j
+                    header_matches += 1
+                # Check for price header
+                elif any(h in cell_text for h in price_headers):
+                    header_cols['price'] = j
+                    header_matches += 1
 
+            # If we found at least 2 matching headers, this is likely a product table
+            if header_matches >= 2 and 'description' in header_cols:
+                table_products = []
+
+                # Process rows below the header
+                for data_row in range(i + 1, min(i + 30, len(df))):
+                    # Get description - the key field
+                    try:
+                        desc_text = str(df.iloc[data_row, header_cols['description']]).strip()
+                    except:
+                        continue
+
+                    # Skip empty rows, header-like texts, or payment terms
+                    if (not desc_text or 
+                        desc_text.lower() in desc_headers + ['total', 'subtotal', 'المجموع'] or
+                        'ÔÑæØ ÇáÏÝÚ' in desc_text or 
+                        'term of payment' in desc_text.lower()):
+                        continue
+
+                    # More flexible detection of total weight and package lines
+                    desc_lower = desc_text.lower().strip()
+                    desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
+                    if any(kw in desc_clean for kw in [
+                        'total weight', 
+                        'total package',
+                        'total weight ',
+                        'total package ',
+                        'total weight in',
+                        'total package in',
+                        'total weight kg',
+                        'total package kg'
+                    ]):
+                        # Add as a special product with quantity=1 and price=0
+                        product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                        table_products.append(product)
+                        continue
+
+                    # Create product
+                    product = {'description': desc_text, 'invoice_number': invoice_number}
+
+                    # Add quantity if that column exists
+                    if 'quantity' in header_cols:
+                        try:
+                            qty_text = str(df.iloc[data_row, header_cols['quantity']]).strip().replace(',', '')
+                            if qty_text and qty_text.lower() != 'nan' and qty_text.lower() not in qty_headers:
+                                try:
+                                    qty_value = float(qty_text)
+                                    product['quantity'] = qty_value
+                                except:
+                                    product['quantity'] = qty_text
+                        except:
+                            pass
+
+                    # Add price if that column exists
+                    if 'price' in header_cols:
+                        try:
+                            price_text = str(df.iloc[data_row, header_cols['price']]).strip().replace(',', '')
+                            if price_text and price_text.lower() != 'nan' and price_text.lower() not in price_headers:
+                                try:
+                                    price_value = float(price_text)
+                                    product['unit_price'] = price_value
+                                except:
+                                    product['unit_price'] = price_text
+                        except:
+                            pass
+
+                    # Add the product if we have enough data
+                    if len(product) > 2:
+                        table_products.append(product)
+
+                # If we found products, add them
+                if table_products:
+                    products.extend(table_products)
+
+    # Method 3: Special format search based on the image that shows product table with code, description, qty, price columns
+    if not products:  # Only try this if we haven't found products yet
+        for i in range(len(df)):
+            # Look for rows that contain product details
+            for j in range(len(df.columns)):
+                cell = str(df.iloc[i, j]).strip().lower()
+                # Looking for "invoice details" or similar headers that indicate where product tables begin
+                if ('invoice details' in cell or 'تفاصيل الفاتورة' in cell or 
+                    ('الفاتورة' in cell and ('تفاصيل' in cell or 'بيانات' in cell))):
+
+                    # Search for column indices in the rows below
+                    code_col = None
+                    desc_col = None
+                    qty_col = None
+                    price_col = None
+
+                    # Look at the next 5 rows for headers
+                    for row_idx in range(i+1, min(i+6, len(df))):
+                        # Look for code column
+                        for col_idx in range(len(df.columns)):
+                            cell_text = str(df.iloc[row_idx, col_idx]).strip().lower()
+
+                            # Look for code/item code column
+                            if ('code' in cell_text and not 'currency' in cell_text) or 'رمز' in cell_text:
+                                code_col = col_idx
+                            # Look for description column
+                            elif any(term in cell_text for term in ['description', 'desc', 'التسمية', 'الوصف']):
+                                desc_col = col_idx
+                            # Look for quantity column
+                            elif any(term in cell_text for term in ['quantity', 'qty', 'الكمية']):
+                                qty_col = col_idx
+                            # Look for unit price column
+                            elif any(term in cell_text for term in ['unit price', 'price', 'سعر']):
+                                price_col = col_idx
+
+                    # If we found the required columns
+                    if desc_col is not None and (qty_col is not None or price_col is not None):
+                        special_products = []
+
+                        # Start from the row after header row
+                        start_row = row_idx + 1
+
+                        # Parse product rows
+                        for data_row in range(start_row, min(start_row+30, len(df))):
+                            # Only process if we can get a valid description
+                            try:
+                                desc_text = str(df.iloc[data_row, desc_col]).strip()
+                                if not desc_text or desc_text.lower() in ['description', 'total', 'amount', 'المجموع']:
+                                    continue
+                                
+                                # Check if this is a total weight or package line
+                                desc_lower = desc_text.lower().strip()
+                                desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
+                                if any(kw in desc_clean for kw in [
+                                    'total weight', 
+                                    'total package',
+                                    'total weight ',
+                                    'total package ',
+                                    'total weight in',
+                                    'total package in',
+                                    'total weight kg',
+                                    'total package kg'
+                                ]):
+                                    # Add as a special product with quantity=1 and price=0
+                                    product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                                    special_products.append(product)
+                                    continue
+                                    
+                                product = {'description': desc_text, 'invoice_number': invoice_number}
+
+                                # Add code if available
+                                if code_col is not None:
+                                    code_text = str(df.iloc[data_row, code_col]).strip()
+                                    if code_text and code_text.lower() != 'nan':
+                                        product['item_code'] = code_text
+
+                                # Add quantity if available
+                                if qty_col is not None:
+                                    qty_text = str(df.iloc[data_row, qty_col]).strip().replace(',', '')
+                                    if qty_text and qty_text.lower() != 'nan':
+                                        try:
+                                            qty_value = float(qty_text)
+                                            product['quantity'] = qty_value
+                                        except:
+                                            product['quantity'] = qty_text
+
+                                # Add price if available
+                                if price_col is not None:
+                                    price_text = str(df.iloc[data_row, price_col]).strip().replace(',', '')
+                                    if price_text and price_text.lower() != 'nan':
+                                        try:
+                                            price_value = float(price_text)
+                                            product['unit_price'] = price_value
+                                        except:
+                                            product['unit_price'] = price_text
+
+                                # Add product if it has enough data
+                                if len(product) > 2:
+                                    special_products.append(product)
+                            except:
+                                continue
+
+                        # If we found products, add them
+                        if special_products:
+                            products.extend(special_products)
+                            break
+
+    # Fallback: generic data pattern search if we still haven't found products
+    # This looks for any content that appears to be product descriptions followed by numbers
+    pattern_products = []
+
+    # Helper function to check if a string is a number
     def is_number(s):
         try:
             float(str(s).replace(',', ''))
@@ -504,419 +752,114 @@ def extract_product_details(df, invoice_number=None):
         except:
             return False
 
-    def analyze_row(row):
-        """Analyze a row to determine if it looks like a product row"""
-        text_cols = []
-        num_cols = []
-
-        for i, cell in enumerate(row):
-            cell_str = str(cell).strip()
-            if cell_str and cell_str.lower() != 'nan':
-                if is_number(cell_str):
-                    num_cols.append(i)
-                else:
-                    text_cols.append(i)
-
-        return len(text_cols) >= 1 and len(num_cols) >= 1
-
-    # First try to find tables by data patterns
+    # Look for rows with text followed by 2+ numbers (likely description + qty + price)
     for i in range(len(df)):
-        row_data = [str(df.iloc[i, j]).strip() for j in range(len(df.columns))]
+        row_data = []
+
+        # Get all cell values in this row
+        for j in range(len(df.columns)):
+            try:
+                cell_text = str(df.iloc[i, j]).strip()
+                if cell_text and cell_text.lower() != 'nan':
+                    row_data.append((j, cell_text))
+            except:
+                continue
 
         # Skip empty rows
-        if not any(row_data):
+        if len(row_data) < 3:
             continue
 
-        # Check if this row looks like a product row
-        if analyze_row(row_data):
-            # Find columns based on data type
+        # Check if this row has the pattern: text + number + number
+        has_text = False
+        num_count = 0
+
+        for _, cell_val in row_data:
+            if is_number(cell_val):
+                num_count += 1
+            elif len(cell_val) > 3:  # Non-numeric cell with reasonable length
+                has_text = True
+
+        # If row matches text + multiple numbers pattern, it's probably a product row
+        # Filter out payment terms and proceed if text + multiple numbers pattern is found
+        payment_terms_text = ['ÔÑæØ ÇáÏÝÚ', 'term of payment']
+
+        # Check if any of the cells contain payment terms text
+        contains_payment_terms = False
+        for _, cell_val in row_data:
+            # Define payment terms text list here to fix the undefined variable issue
+            payment_terms = ['ÔÑæØ ÇáÏÝÚ', 'term of payment', 'payment term', 'payment terms']
+            if any(term in cell_val for term in payment_terms) or any(term in cell_val.lower() for term in payment_terms):
+                contains_payment_terms = True
+                break
+                
+        # Check if this is a total weight or total package line
+        is_weight_package_row = False
+        for _, cell_val in row_data:
+            cell_lower = cell_val.lower().strip()
+            cell_clean = cell_lower.replace(':', '').replace('(', '').replace(')', '')
+            if any(kw in cell_clean for kw in [
+                'total weight', 
+                'total package',
+                'total weight ',
+                'total package ',
+                'total weight in',
+                'total package in',
+                'total weight kg',
+                'total package kg'
+            ]):
+                # Add as a product with quantity=1 and price=0
+                product = {'description': cell_val.strip(), 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                pattern_products.append(product)
+                is_weight_package_row = True
+                break
+                
+        if not is_weight_package_row and has_text and num_count >= 2 and not contains_payment_terms:
+            # Identify which column contains the description (usually the longest text)
             desc_col = None
-            num_cols = []
+            desc_len = 0
 
-            for j, cell in enumerate(row_data):
-                if cell and cell.lower() != 'nan':
-                    if is_number(cell):
-                        num_cols.append(j)
-                    elif len(cell) > 3 and not any(k in cell.lower() for k in sum(header_keywords.values(), [])):
-                        desc_col = j
+            for col_idx, cell_val in row_data:
+                if not is_number(cell_val) and len(cell_val) > desc_len:
+                    desc_col = col_idx
+                    desc_len = len(cell_val)
 
-            if desc_col is not None and num_cols:
-                # Process rows starting from here
-                current_row = i
-                pattern_products = []
+            # If we found a description column
+            if desc_col is not None:
+                description = str(df.iloc[i, desc_col]).strip()
+                product = {'description': description, 'invoice_number': invoice_number}
 
-                while current_row < len(df) and current_row < i + 30:
-                    row_values = [str(df.iloc[current_row, j]).strip() for j in range(len(df.columns))]
+                # Find numeric columns (potential quantity/price)
+                num_cols = []
+                for col_idx, cell_val in row_data:
+                    if col_idx != desc_col and is_number(cell_val):
+                        num_cols.append(col_idx)
 
-                    if not any(row_values):
-                        break
+                # If we have at least one numeric column, get quantity and price
+                if num_cols:
+                    # First number is usually quantity
+                    try:
+                        qty_text = str(df.iloc[i, num_cols[0]]).strip().replace(',', '')
+                        qty_value = float(qty_text)
+                        product['quantity'] = qty_value
+                    except:
+                        pass
 
-                    description = str(df.iloc[current_row, desc_col]).strip()
-                    if not description or description.lower() == 'nan':
-                        current_row += 1
-                        continue
-
-                    product = {'description': description}
-
-                    # Get first numeric value as quantity
-                    for num_col in num_cols:
-                        val = str(df.iloc[current_row, num_col]).strip()
-                        if val and is_number(val):
-                            try:
-                                num = float(val.replace(',', ''))
-                                if num > 0 and num < 1000000:  # Reasonable quantity range
-                                    product['quantity'] = num
-                                    num_cols.remove(num_col)
-                                    break
-                            except:
-                                pass
-
-                    # Get second numeric value as price
-                    for num_col in num_cols:
-                        val = str(df.iloc[current_row, num_col]).strip()
-                        if val and is_number(val):
-                            try:
-                                num = float(val.replace(',', ''))
-                                if num > 0:  # Any positive number could be a price
-                                    product['unit_price'] = num
-                                    break
-                            except:
-                                pass
-
-                    if len(product) > 1:
-                        # Link the product to its invoice
-                        product['invoice_number'] = invoice_number
-                        pattern_products.append(product)
-
-                    current_row += 1
-
-                if pattern_products:
-                    products.extend(pattern_products)
-                    return products
-
-        # If pattern matching didn't work, try header keywords
-        header_cols = {'description': None, 'quantity': None, 'price': None}
-        header_found = False
-
-        # Look for header row
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip().lower()
-
-            # Check for each type of header
-            for header_type, keywords in header_keywords.items():
-                if any(keyword in cell for keyword in keywords):
-                    header_cols[header_type] = j
-                    header_found = True
-
-            # Look for tables with Document Number, Description, Quantity, and Unit Price headers
-            if ('document number' in cell) or ('description' in cell and j+3 < len(df.columns)):
-                # Search for a row that has these headers
-                header_row = i
-                header_found = False
-                doc_num_col = None
-                desc_col = None
-                qty_col = None
-                price_col = None
-                unit_type_col = None
-
-                # Scan this row and nearby rows for headers
-                for scan_row in range(max(0, i-1), min(i+2, len(df))):
-                    for scan_col in range(len(df.columns)):
-                        scan_cell = str(df.iloc[scan_row, scan_col]).strip().lower()
-
-                        if scan_cell == 'document number':
-                            doc_num_col = scan_col
-                            header_found = True
-                        elif scan_cell == 'description':
-                            desc_col = scan_col
-                            header_found = True
-                        elif scan_cell == 'quantity':
-                            qty_col = scan_col
-                            header_found = True
-                        elif scan_cell == 'unit price':
-                            price_col = scan_col
-                            header_found = True
-                        elif scan_cell == 'unit type':
-                            unit_type_col = scan_col
-
-                # If we found at least description and one other field
-                if header_found and header_cols['description'] is not None and (header_cols['quantity'] is not None or header_cols['price'] is not None):
-                    current_row = i + 1
-                    temp_products = []
-
-                    # Process rows until we hit an empty row or max rows
-                    while current_row < len(df) and current_row < i + 20:  # Limit to 20 rows
-                        desc = str(df.iloc[current_row, header_cols['description']]).strip()
-
-                        # Skip if description is empty or looks like a header
-                        if not desc or desc.lower() in [k for kws in header_keywords.values() for k in kws]:
-                            current_row += 1
-                            continue
-
-                        product = {'description': desc}
-
-                        # Get quantity if column exists
-                        if header_cols['quantity'] is not None:
-                            qty_str = str(df.iloc[current_row, header_cols['quantity']]).strip()
-                            if qty_str and not any(k in qty_str.lower() for k in header_keywords['quantity']):
-                                try:
-                                    qty = float(qty_str.replace(',', ''))
-                                    product['quantity'] = qty
-                                except:
-                                    product['quantity'] = qty_str
-
-                        # Get price if column exists
-                        if header_cols['price'] is not None:
-                            price_str = str(df.iloc[current_row, header_cols['price']]).strip()
-                            if price_str and not any(k in price_str.lower() for k in header_keywords['price']):
-                                try:
-                                    price = float(price_str.replace(',', ''))
-                                    product['unit_price'] = price
-                                except:
-                                    product['unit_price'] = price_str
-
-                        # Add product if it has enough data
-                        if len(product) > 1:  # At least description and one other field
-                            temp_products.append(product)
-
-                        current_row += 1
-
-                    # If we found products, add them and return
-                    if temp_products:
-                        products.extend(temp_products)
-                        return products
-
-                    # Process rows in this table
-                    while current_row < len(df) and current_row < header_row + 30:  # Limit search depth
-                        # Skip empty rows
-                        if all(str(df.iloc[current_row, k]).strip() == '' 
-                              for k in range(max(0, j-2), min(j+8, len(df.columns)))):
-                            current_row += 1
-                            continue
-
-                        # Get values from this row
-                        # For document number, either use the column or store from invoice
-                        doc_num = ''
-                        if doc_num_col is not None:
-                            doc_num = str(df.iloc[current_row, doc_num_col]).strip()
-
-                        # Description is required
-                        if desc_col is None:
-                            current_row += 1
-                            continue
-
-                        description = str(df.iloc[current_row, desc_col]).strip()
-
-                        # Skip if description is empty or looks like a header
-                        if not description or description.lower() in ['description', 'item', 'product', 'التسمية', 'الوصف']:
-                            current_row += 1
-                            continue
-
-                        # Create product entry
-                        product = {
-                            'description': description,
-                        }
-
-                        # Add document number if found
-                        if doc_num:
-                            product['document_number'] = doc_num
-
-                        # Get quantity if column exists
-                        if qty_col is not None:
-                            qty_str = str(df.iloc[current_row, qty_col]).strip()
-                            if qty_str and qty_str.lower() not in ['quantity', 'qty', 'الكمية']:
-                                try:
-                                    # Clean the quantity string and convert to float
-                                    qty_str = qty_str.replace(',', '')
-                                    qty = float(qty_str)
-                                    product['quantity'] = qty
-                                except:
-                                    product['quantity'] = qty_str
-
-                        # Get unit price if column exists
-                        if price_col is not None:
-                            price_str = str(df.iloc[current_row, price_col]).strip()
-                            if price_str and price_str.lower() not in ['unit price', 'price', 'سعر الوحدة']:
-                                try:
-                                    # Clean the price string and convert to float
-                                    price_str = price_str.replace(',', '')
-                                    price = float(price_str)
-                                    product['unit_price'] = price
-                                except:
-                                    product['unit_price'] = price_str
-
-                        # Get unit type if column exists
-                        if unit_type_col is not None:
-                            unit_type = str(df.iloc[current_row, unit_type_col]).strip()
-                            if unit_type and unit_type.lower() not in ['unit type', 'unit', 'الوحدة']:
-                                product['unit_type'] = unit_type
-
-                        # Add the product if it has essential data
-                        if 'description' in product and (
-                            'quantity' in product or 'unit_price' in product
-                        ):
-                            doc_products.append(product)
-
-                        current_row += 1
-
-                    # If we found products in this table, add them to the results
-                    if doc_products:
-                        products.extend(doc_products)
-                        # Return early if we've found products in the expected format
-                        return products
-
-    # Method 2: Look for Arabic description tables (like in example image 4)
-    arabic_desc_found = False
-    for i in range(len(df)):
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip().lower()
-
-            # Look for Arabic description header
-            if 'التسمية' in cell or 'الوصف' in cell:
-                arabic_desc_found = True
-                desc_col = j
-                qty_col = None
-                price_col = None
-
-                # Look for quantity and price headers in this row
-                for k in range(len(df.columns)):
-                    cell_k = str(df.iloc[i, k]).strip().lower()
-                    if 'الكمية' in cell_k or 'العدد' in cell_k:
-                        qty_col = k
-                    elif 'سعر الوحدة' in cellk or 'السعر' in cell_k:
-                        price_col = k
-
-                # If we've found the key columns
-                if qty_col is not None or price_col is not None:
-                    # Process product rows
-                    current_row = i + 1
-                    arabic_products = []
-
-                    while current_row < len(df) and current_row < i + 30:  # Limit search depth
-                        # Check if this is a valid product row
-                        desc = str(df.iloc[current_row, desc_col]).strip()
-
-                        if desc and not any(header in desc.lower() for header in ['التسمية', 'الوصف', 'الكمية', 'سعر']):
-                            product = {'description': desc}
-
-                            # Get quantity
-                            if qty_col is not None:
-                                qty_str = str(df.iloc[current_row, qty_col]).strip()
-                                if qty_str and not any(h in qty_str.lower() for h in ['الكمية', 'quantity']):
-                                    try:
-                                        qty = float(qty_str.replace(',', ''))
-                                        product['quantity'] = qty
-                                    except:
-                                        product['quantity'] = qty_str
-
-                            # Get unit price
-                            if price_col is not None:
-                                price_str = str(df.iloc[current_row, price_col]).strip()
-                                if price_str and not any(h in price_str.lower() for h in ['سعر', 'price']):
-                                    try:
-                                        price = float(price_str.replace(',', ''))
-                                        product['unit_price'] = price
-                                    except:
-                                        product['unit_price'] = price_str
-
-                            # Add product if it has enough information
-                            if len(product) > 1:  # At least description and one other field
-                                arabic_products.append(product)
-
-                        current_row += 1
-
-                    # If we found products, add them to the results
-                    if arabic_products:
-                        products.extend(arabic_products)
-                        # Return early if we've found products matching Arabic format
-                        return products
-
-    # Method 3: Generic method for finding product tables
-    # Use this as a fallback if specific formats weren't found
-
-    # Common headers in English and Arabic
-    desc_headers = ['description', 'item', 'product', 'التسمية', 'الوصف', 'المنتج']
-    qty_headers = ['quantity', 'qty', 'pcs', 'الكمية', 'العدد']
-    price_headers = ['unit price', 'price', 'سعر الوحدة', 'السعر']
-
-    # Find rows that look like table headers
-    header_rows = []
-    for i in range(len(df)):
-        header_count = 0
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip().lower()
-            if any(h in cell for h in desc_headers + qty_headers + price_headers):
-                header_count += 1
-
-        # If this row has multiple headers, it's likely a product table header
-        if header_count >= 2:
-            header_rows.append(i)
-
-    # Process each potential header row
-    for header_row in header_rows:
-        # Find column indices for product data
-        desc_col = None
-        qty_col = None
-        price_col = None
-
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[header_row, j]).strip().lower()
-
-            if any(h in cell for h in desc_headers):
-                desc_col = j
-            elif any(h in cell for h in qty_headers):
-                qty_col = j
-            elif any(h in cell for h in price_headers):
-                price_col = j
-
-        # If we found key columns, process product data
-        if desc_col is not None and (qty_col is not None or price_col is not None):
-            current_row = header_row + 1
-            fallback_products = []
-
-            while current_row < len(df) and current_row < header_row + 30:
-                # Get product data
-                desc = str(df.iloc[current_row, desc_col]).strip()
-
-                # Skip empty rows or header-like rows
-                if not desc or any(h in desc.lower() for h in desc_headers + qty_headers + price_headers):
-                    current_row += 1
-                    continue
-
-                product = {'description': desc}
-
-                # Get quantity if available
-                if qty_col is not None:
-                    qty_str = str(df.iloc[current_row, qty_col]).strip()
-                    if qty_str and not any(h in qty_str.lower() for h in qty_headers):
+                    # Second number is usually price
+                    if len(num_cols) > 1:
                         try:
-                            qty = float(qty_str.replace(',', ''))
-                            product['quantity'] = qty
+                            price_text = str(df.iloc[i, num_cols[1]]).strip().replace(',', '')
+                            price_value = float(price_text)
+                            product['unit_price'] = price_value
                         except:
-                            product['quantity'] = qty_str
-
-                # Get price if available
-                if price_col is not None:
-                    price_str = str(df.iloc[current_row, price_col]).strip()
-                    if price_str and not any(h in price_str.lower() for h in price_headers):
-                        try:
-                            price = float(price_str.replace(',', ''))
-                            product['unit_price'] = price
-                        except:
-                            product['unit_price'] = price_str
+                            pass
 
                 # Add product if it has enough information
-                if len(product) > 1:
-                    fallback_products.append(product)
+                if len(product) > 2:
+                    pattern_products.append(product)
 
-                current_row += 1
+    # If we found products with pattern matching
+    if pattern_products:
+        products.extend(pattern_products)
 
-            # If we found products, add them to the results
-            if fallback_products:
-                products.extend(fallback_products)
-                # Return if we found products with this fallback method
-                if len(products) > 0:
-                    return products
-
-    # Return whatever products we found, or empty list if none
+    # Return whatever products we found
     return products
