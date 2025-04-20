@@ -5,6 +5,45 @@ import io
 import os
 from datetime import datetime
 
+def fix_encoding(text):
+    """
+    Attempts to fix corrupted Arabic text by decoding it using 'windows-1256' 
+    after encoding with 'latin1'. Preserves the original encoded text
+    in cases where exact pattern matching is needed.
+    
+    Args:
+        text: The potentially corrupted text string
+        
+    Returns:
+        Fixed text string if successful, or original text if decoding fails
+    """
+    if not isinstance(text, str):
+        return text
+    
+    # Check for exact encoded string patterns that we want to preserve for matching
+    exact_encoded_patterns = [
+        "ÝÇÊæÑÉ / INVOICE  N°:",
+        "ÑãÒ ÇáÔÑíß ÇáÊÌÇÑí / Partner code :",
+        "ÑãÒ ÇáÓáÚÉ\nArticle code",
+        "ÇáÊÓãíÉ\nDescription",
+        "ÇáßãíÉ\nQuantity",
+        "ÓÚÑ ÇáæÍÏÉ\nUnit price"
+    ]
+    
+    # Preserve exact pattern if found
+    for pattern in exact_encoded_patterns:
+        if pattern in text:
+            return text
+            
+    try:
+        # Convert corrupted Arabic text using windows-1256 encoding
+        # First encode to latin1 bytes, then decode using windows-1256
+        fixed_text = text.encode('latin1').decode('windows-1256')
+        return fixed_text
+    except Exception:
+        # If decoding fails, return the original text
+        return text
+
 def process_invoices(uploaded_file):
     """
     Process the uploaded Excel file containing multiple invoice sheets.
@@ -32,17 +71,41 @@ def process_invoices(uploaded_file):
             # Convert DataFrame to ensure all values are strings for text searching
             # Replace NaN with empty string to avoid errors during text search
             df_string = df.astype(str).replace('nan', '', regex=True)
+            
+            # Create a copy of the original DataFrame for exact pattern matching
+            df_original = df_string.copy()
+            
+            # Apply fix_encoding to all text values in the DataFrame
+            for i in range(len(df_string)):
+                for j in range(len(df_string.columns)):
+                    df_string.iloc[i, j] = fix_encoding(df_string.iloc[i, j])
+                    
+            # First try extraction with original encoding (for exact pattern matching)
+            invoice_number = extract_invoice_number(df_original)
+            customer_code = extract_customer_code(df_original)
+            
+            # If extraction fails with original encoding, try with fixed encoding
+            if not invoice_number:
+                invoice_number = extract_invoice_number(df_string)
+            if not customer_code:
+                customer_code = extract_customer_code(df_string)
 
-            # Extract invoice number first
-            invoice_number = extract_invoice_number(df_string)
+            # Currency and date are less sensitive to encoding issues
+            currency = extract_currency(df_string)
+            invoice_date = extract_invoice_date(df_string)
+            
+            # For products, try with original encoding first, then with fixed encoding if needed
+            products = extract_product_details(df_original, invoice_number)
+            if not products:
+                products = extract_product_details(df_string, invoice_number)
 
             # Extract invoice data with linked products
             invoice_data = {
                 'invoice_number': invoice_number,
-                'customer_code': extract_customer_code(df_string),
-                'currency': extract_currency(df_string),
-                'invoice_date': extract_invoice_date(df_string),
-                'products': extract_product_details(df_string, invoice_number),
+                'customer_code': customer_code,
+                'currency': currency,
+                'invoice_date': invoice_date,
+                'products': products,
                 'sheet_name': sheet_name
             }
 
@@ -64,20 +127,30 @@ def extract_invoice_number(df):
     Returns:
         Extracted invoice number or None if not found
     """
-    # Primary method: Look for "INVOICE N:" keyword as specified in requirements
-    invoice_n_keyword = 'invoice n:'
+    # Primary method: Look for exact encoded Arabic and English invoice keywords
+    # Including the exact encoded string that appears in real invoices
+    invoice_n_keywords = ['invoice n:', 'invoice n°:', 'invoice no:', 'invoice number:', 'ÝÇÊæÑÉ / invoice n°:']
 
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            if invoice_n_keyword in cell:
+            
+            # Check if any of the invoice keywords are in the cell
+            if any(keyword in cell for keyword in invoice_n_keywords):
                 # Extract invoice number directly from this cell 
-                match = re.search(f"{invoice_n_keyword}[:\\s°.]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
-                if match:
-                    invoice_num = match.group(1).strip()
-                    # Validate it follows the SIxxxxx pattern
-                    if re.match(r'^SI\d+$', invoice_num):
-                        return invoice_num
+                for keyword in invoice_n_keywords:
+                    if keyword in cell:
+                        match = re.search(f"{re.escape(keyword)}[:\\s°.]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
+                        if match:
+                            invoice_num = match.group(1).strip()
+                            # Validate it follows the SIxxxxx pattern
+                            if re.match(r'^SI\d+$', invoice_num):
+                                return invoice_num
+                
+                # Also look for SI pattern in the same cell
+                si_match = re.search(r'SI\d+', cell)
+                if si_match:
+                    return si_match.group(0).strip()
 
                 # Check the cell to the right (common layout)
                 if j + 1 < len(df.columns):
@@ -116,10 +189,10 @@ def extract_invoice_number(df):
             if match:
                 return match.group(0).strip()
 
-    # Backup method 3: Look for other invoice number keywords
+    # Backup method 3: Look for other invoice number keywords (English only)
     other_invoice_keywords = [
         'invoice no', 'invoice number', 'invoice #',
-        'inv', 'inv no', 'invoice', 'فاتورة رقم', 'رقم الفاتورة'
+        'inv', 'inv no', 'invoice'
     ]
 
     # Search for each keyword in the dataframe
@@ -155,20 +228,29 @@ def extract_customer_code(df):
     Returns:
         Extracted customer code or None if not found
     """
-    # Primary method: Look for "partner code:" keyword as specified in requirements
-    partner_code_keyword = 'partner code:'
+    # Primary method: Look for exact encoded Arabic and English partner code keywords
+    # Including the exact encoded string that appears in real invoices
+    partner_code_keywords = ['partner code:', 'partner code :', 'code:', 'ÑãÒ ÇáÔÑíß ÇáÊÌÇÑí / partner code :']
 
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            if partner_code_keyword in cell:
+            
+            if any(keyword in cell for keyword in partner_code_keywords):
                 # Try to extract the customer code directly from this cell
-                match = re.search(f"{partner_code_keyword}[:\\s]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
-                if match:
-                    code = match.group(1).strip()
-                    # Validate it follows the Cxxxx pattern
-                    if re.match(r'^C\d+$', code):
-                        return code
+                for keyword in partner_code_keywords:
+                    if keyword in cell:
+                        match = re.search(f"{re.escape(keyword)}[:\\s]*([a-zA-Z0-9\\-/]+)", cell, re.IGNORECASE)
+                        if match:
+                            code = match.group(1).strip()
+                            # Validate it follows the Cxxxx pattern
+                            if re.match(r'^C\d+$', code):
+                                return code
+                
+                # Also check for C pattern in the same cell
+                c_match = re.search(r'C\d+', cell)
+                if c_match and re.match(r'^C\d+$', c_match.group(0)):
+                    return c_match.group(0).strip()
 
                 # Check the cell to the right (common layout)
                 if j + 1 < len(df.columns):
@@ -212,11 +294,10 @@ def extract_customer_code(df):
                         if re.match(r'^C\d+$', code_value):
                             return code_value
 
-    # Backup method 2: Look for other customer code indicators
+    # Backup method 2: Look for other customer code indicators (English only)
     other_code_keywords = [
         'customer code', 'client code', 'account code', 'partner id',
-        'رمز العميل', 'كود العميل', 'رقم العميل', 'partner code :',
-        'partner details'
+        'partner code', 'partner details', 'client id', 'customer id'
     ]
 
     # Search for each keyword in the dataframe
@@ -347,10 +428,10 @@ def extract_invoice_date(df):
                         if re.match(r'\d{1,2}/\d{1,2}/\d{4}', date_value):
                             return date_value
 
-    # Keywords that might precede an invoice date
+    # Keywords that might precede an invoice date (English only)
     date_keywords = [
         'date', 'invoice date', 'issued on', 'document date', 'payment date',
-        'تاريخ', 'تاريخ الفاتورة'
+        'issue date'
     ]
 
     # Common date formats (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, etc.)
@@ -412,6 +493,7 @@ def extract_product_details(df, invoice_number=None):
         List of dictionaries containing product details with invoice linkage
     """
     products = []
+    last_product_row = -1  # Track the last row where we found a product
 
     # Method 1: Look for "Invoice details" section which contains the product table
     for i in range(len(df)):
@@ -431,16 +513,16 @@ def extract_product_details(df, invoice_number=None):
                     for col_idx in range(len(df.columns)):
                         header_text = str(df.iloc[row_idx, col_idx]).strip().lower()
 
-                        # Check for different header possibilities (English/Arabic)
-                        if 'code' in header_text or 'item code' in header_text or 'رمز' in header_text:
+                        # Check for different header possibilities including exact encoded Arabic strings
+                        if 'code' in header_text or 'item code' in header_text or 'article code' in header_text or 'ÑãÒ ÇáÓáÚÉ' in header_text:
                             item_code_col = col_idx
-                        elif 'description' in header_text or 'desc' in header_text or 'وصف' in header_text or 'التسمية' in header_text:
+                        elif 'description' in header_text or 'desc' in header_text or 'ÇáÊÓãíÉ' in header_text:
                             desc_col = col_idx
-                        elif 'quantity' in header_text or 'qty' in header_text or 'الكمية' in header_text:
+                        elif 'quantity' in header_text or 'qty' in header_text or 'ÇáßãíÉ' in header_text:
                             qty_col = col_idx
-                        elif ('unit' in header_text and 'price' in header_text) or 'سعر الوحدة' in header_text:
+                        elif ('unit' in header_text and 'price' in header_text) or 'unit price' in header_text or 'ÓÚÑ ÇáæÍÏÉ' in header_text:
                             price_col = col_idx
-                        elif 'amount' in header_text or 'المبلغ' in header_text:
+                        elif 'amount' in header_text:
                             amount_col = col_idx
 
                 # If we found at least description column and one numeric column
@@ -464,25 +546,60 @@ def extract_product_details(df, invoice_number=None):
                             'term of payment' in desc_text.lower()):
                             continue
 
-                        # More flexible detection of total weight and package lines
+                        # Enhanced detection of total weight and package lines
                         desc_lower = desc_text.lower().strip()
                         desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
-                        if any(kw in desc_clean for kw in [
-                            'total weight', 
-                            'total package',
-                            'total weight ',
-                            'total package ',
-                            'total weight in',
-                            'total package in',
-                            'total weight kg',
-                            'total package kg'
-                        ]):
-                            # Add as a special product with quantity=1 and price=0
-                            product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
-                            table_products.append(product)
-                            continue
+                        # Include more possible patterns
+                        weight_patterns = [
+                            'total weight', 'weight total', 'total wt', 'net weight', 'gross weight',
+                            'total package', 'package total', 'total packages', 'packages total'
+                        ]
 
-                        # Create product entry
+                        # Check if any pattern is in the description
+                        if any(pattern in desc_clean for pattern in weight_patterns):
+                            # This is a weight or package row - extract it as a product
+                            qty_value = 1  # Default value
+
+                            # Try to extract numeric value from the description itself
+                            # Handle formats like "TOTAL WEIGHT= 2KG" or "TOTAL WEIGHT=2KG"
+                            num_match = re.search(r'[=:]?\s*(\d+(?:\.\d+)?)\s*(?:[a-zA-Z]*)', desc_text)
+                            if num_match:
+                                try:
+                                    qty_value = float(num_match.group(1))
+                                except:
+                                    pass
+                            else:
+                                # Try to find a numeric value in other columns of this row
+                                for col_idx in range(len(df.columns)):
+                                    if col_idx != desc_col:  # Skip description column
+                                        cell_val = str(df.iloc[data_row, col_idx]).strip().replace(',', '')
+                                        if cell_val and cell_val.lower() != 'nan':
+                                            try:
+                                                numeric_val = float(cell_val)
+                                                qty_value = numeric_val
+                                                break
+                                            except ValueError:
+                                                # Try to extract numeric part from text
+                                                num_match = re.search(r'(\d+(?:\.\d+)?)', cell_val)
+                                                if num_match:
+                                                    try:
+                                                        qty_value = float(num_match.group(1))
+                                                        break
+                                                    except:
+                                                        pass
+
+                            # Create product entry for weight/package
+                            product = {
+                                'description': desc_text,
+                                'invoice_number': invoice_number,
+                                'quantity': qty_value,
+                                'unit_price': 0  # Default price
+                            }
+                            products.append(product)
+                            last_product_row = data_row  # Update last product row
+                            continue  # Skip normal product processing for this row
+
+                        # Create product entry for regular products
                         product = {'description': desc_text, 'invoice_number': invoice_number}
 
                         # Add item code if available
@@ -525,6 +642,7 @@ def extract_product_details(df, invoice_number=None):
                         # If we have at least description and one numeric field, add the product
                         if len(product) > 2:  # More than just description and invoice_number
                             table_products.append(product)
+                            last_product_row = data_row  # Update last product row
 
                     # If we found products, add them to the results
                     if table_products:
@@ -532,10 +650,10 @@ def extract_product_details(df, invoice_number=None):
 
     # Method 2: Look for tables with common headers like Description/Quantity/Price
     if not products:  # Only if we haven't found products yet
-        # Common header texts in English and Arabic
-        desc_headers = ['description', 'item description', 'product', 'desc', 'التسمية', 'الوصف', 'المنتج']
-        qty_headers = ['quantity', 'qty', 'الكمية', 'العدد']
-        price_headers = ['unit price', 'price', 'unit cost', 'سعر الوحدة', 'السعر']
+        # Common header texts including exact encoded Arabic strings
+        desc_headers = ['description', 'item description', 'product', 'desc', 'ÇáÊÓãíÉ']
+        qty_headers = ['quantity', 'qty', 'ÇáßãíÉ']
+        price_headers = ['unit price', 'price', 'unit cost', 'ÓÚÑ ÇáæÍÏÉ']
 
         # Scan for header rows
         for i in range(len(df)):
@@ -578,21 +696,61 @@ def extract_product_details(df, invoice_number=None):
                         'term of payment' in desc_text.lower()):
                         continue
 
-                    # More flexible detection of total weight and package lines
+                    # Enhanced detection of total weight and package lines with fuzzy matching
                     desc_lower = desc_text.lower().strip()
-                    desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
-                    if any(kw in desc_clean for kw in [
-                        'total weight', 
-                        'total package',
-                        'total weight ',
-                        'total package ',
-                        'total weight in',
-                        'total package in',
-                        'total weight kg',
-                        'total package kg'
-                    ]):
-                        # Add as a special product with quantity=1 and price=0
-                        product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                    # Normalize the description by removing spaces and punctuation
+                    desc_normalized = ''.join(c.lower() for c in desc_text if c.isalnum())
+                    desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '').replace('=', ' ').replace('  ', ' ')
+
+                    # Include more possible patterns with variations
+                    weight_patterns = [
+                        'total weight', 'weight total', 'total wt', 'net weight', 'gross weight', 'totalweight',
+                        'weight', 'wt', 'weght', 'wieght', 'weignt', 'waight',  # Common typos
+                        'total package', 'package total', 'total packages', 'packages total', 'totalpackage',
+                        'package', 'pkg', 'packge', 'packg', 'pakage',  # Common typos
+                        'إجمالي الوزن', 'الوزن الإجمالي', 'الوزن الكلي',
+                        'إجمالي الحزم', 'الحزم الإجمالية'
+                    ]
+
+                    # Normalized versions for matching without spaces
+                    normalized_patterns = ['totalweight', 'weighttotal', 'totalwt', 'netweight', 'grossweight',
+                                          'totalpackage', 'packagetotal', 'totalpackages', 'packagestotal']
+
+                    # Check if any pattern is in the description - either exact match or fuzzy match
+                    pattern_match = any(pattern in desc_clean for pattern in weight_patterns)
+                    normalized_match = any(pattern in desc_normalized for pattern in normalized_patterns)
+
+                    # Special case for exact "TOTAL WEIGHT" or "TOTAL PACKAGE" in uppercase
+                    uppercase_match = 'TOTAL WEIGHT' in desc_text or 'TOTAL PACKAGE' in desc_text
+
+                    if pattern_match or normalized_match or uppercase_match:
+                        # Try to extract the numeric value from this row if possible
+                        qty_value = 1  # Default
+
+                        # Check if there's a numeric value in this row
+                        for col_idx in range(len(df.columns)):
+                            if col_idx != header_cols['description']:  # Skip description column
+                                try:
+                                    cell_val = str(df.iloc[data_row, col_idx]).strip().replace(',', '')
+                                    if cell_val and cell_val.lower() != 'nan':
+                                        try:
+                                            # Try to extract a numeric value
+                                            numeric_val = float(cell_val)
+                                            qty_value = numeric_val
+                                            break
+                                        except:
+                                            # If not a valid number, continue looking
+                                            pass
+                                except:
+                                    continue
+
+                        # Add as a special product with extracted quantity and price=0
+                        product = {
+                            'description': desc_text, 
+                            'invoice_number': invoice_number, 
+                            'quantity': qty_value, 
+                            'unit_price': 0
+                        }
                         table_products.append(product)
                         continue
 
@@ -640,8 +798,7 @@ def extract_product_details(df, invoice_number=None):
             for j in range(len(df.columns)):
                 cell = str(df.iloc[i, j]).strip().lower()
                 # Looking for "invoice details" or similar headers that indicate where product tables begin
-                if ('invoice details' in cell or 'تفاصيل الفاتورة' in cell or 
-                    ('الفاتورة' in cell and ('تفاصيل' in cell or 'بيانات' in cell))):
+                if 'invoice details' in cell or 'details' in cell:
 
                     # Search for column indices in the rows below
                     code_col = None
@@ -655,17 +812,17 @@ def extract_product_details(df, invoice_number=None):
                         for col_idx in range(len(df.columns)):
                             cell_text = str(df.iloc[row_idx, col_idx]).strip().lower()
 
-                            # Look for code/item code column
-                            if ('code' in cell_text and not 'currency' in cell_text) or 'رمز' in cell_text:
+                            # Look for code/item code column including exact encoded Arabic string
+                            if ('code' in cell_text and not 'currency' in cell_text) or 'ÑãÒ ÇáÓáÚÉ' in cell_text:
                                 code_col = col_idx
-                            # Look for description column
-                            elif any(term in cell_text for term in ['description', 'desc', 'التسمية', 'الوصف']):
+                            # Look for description column including exact encoded Arabic string
+                            elif any(term in cell_text for term in ['description', 'desc', 'ÇáÊÓãíÉ']):
                                 desc_col = col_idx
-                            # Look for quantity column
-                            elif any(term in cell_text for term in ['quantity', 'qty', 'الكمية']):
+                            # Look for quantity column including exact encoded Arabic string
+                            elif any(term in cell_text for term in ['quantity', 'qty', 'ÇáßãíÉ']):
                                 qty_col = col_idx
-                            # Look for unit price column
-                            elif any(term in cell_text for term in ['unit price', 'price', 'سعر']):
+                            # Look for unit price column including exact encoded Arabic string
+                            elif any(term in cell_text for term in ['unit price', 'price', 'ÓÚÑ ÇáæÍÏÉ']):
                                 price_col = col_idx
 
                     # If we found the required columns
@@ -682,25 +839,48 @@ def extract_product_details(df, invoice_number=None):
                                 desc_text = str(df.iloc[data_row, desc_col]).strip()
                                 if not desc_text or desc_text.lower() in ['description', 'total', 'amount', 'المجموع']:
                                     continue
-                                
+
                                 # Check if this is a total weight or package line
                                 desc_lower = desc_text.lower().strip()
                                 desc_clean = desc_lower.replace(':', '').replace('(', '').replace(')', '')
-                                if any(kw in desc_clean for kw in [
-                                    'total weight', 
-                                    'total package',
-                                    'total weight ',
-                                    'total package ',
-                                    'total weight in',
-                                    'total package in',
-                                    'total weight kg',
-                                    'total package kg'
-                                ]):
-                                    # Add as a special product with quantity=1 and price=0
-                                    product = {'description': desc_text, 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+                                # Include more possible patterns
+                                weight_patterns = [
+                                    'total weight', 'weight total', 'total wt', 'net weight', 'gross weight',
+                                    'total package', 'package total', 'total packages', 'packages total'
+                                ]
+
+                                # Check if any pattern is in the description
+                                if any(pattern in desc_clean for pattern in weight_patterns):
+                                    # Try to extract the numeric value from this row if possible
+                                    qty_value = 1  # Default
+
+                                    # Check if there's a numeric value in this row
+                                    for col_idx in range(len(df.columns)):
+                                        if col_idx != desc_col:  # Skip description column
+                                            try:
+                                                cell_val = str(df.iloc[data_row, col_idx]).strip().replace(',', '')
+                                                if cell_val and cell_val.lower() != 'nan':
+                                                    try:
+                                                        # Try to extract a numeric value
+                                                        numeric_val = float(cell_val)
+                                                        qty_value = numeric_val
+                                                        break
+                                                    except:
+                                                        # If not a valid number, continue looking
+                                                        pass
+                                            except:
+                                                continue
+
+                                    # Add as a special product with extracted quantity and price=0
+                                    product = {
+                                        'description': desc_text, 
+                                        'invoice_number': invoice_number, 
+                                        'quantity': qty_value, 
+                                        'unit_price': 0
+                                    }
                                     special_products.append(product)
                                     continue
-                                    
+
                                 product = {'description': desc_text, 'invoice_number': invoice_number}
 
                                 # Add code if available
@@ -781,7 +961,7 @@ def extract_product_details(df, invoice_number=None):
 
         # If row matches text + multiple numbers pattern, it's probably a product row
         # Filter out payment terms and proceed if text + multiple numbers pattern is found
-        payment_terms_text = ['ÔÑæØ ÇáÏÝÚ', 'term of payment']
+        payment_terms_text = ['term of payment', 'payment term', 'payment terms']
 
         # Check if any of the cells contain payment terms text
         contains_payment_terms = False
@@ -791,28 +971,54 @@ def extract_product_details(df, invoice_number=None):
             if any(term in cell_val for term in payment_terms) or any(term in cell_val.lower() for term in payment_terms):
                 contains_payment_terms = True
                 break
-                
+
         # Check if this is a total weight or total package line
         is_weight_package_row = False
-        for _, cell_val in row_data:
+        for col_idx, cell_val in row_data:
             cell_lower = cell_val.lower().strip()
             cell_clean = cell_lower.replace(':', '').replace('(', '').replace(')', '')
-            if any(kw in cell_clean for kw in [
-                'total weight', 
-                'total package',
-                'total weight ',
-                'total package ',
-                'total weight in',
-                'total package in',
-                'total weight kg',
-                'total package kg'
-            ]):
-                # Add as a product with quantity=1 and price=0
-                product = {'description': cell_val.strip(), 'invoice_number': invoice_number, 'quantity': 1, 'unit_price': 0}
+            # Include more possible patterns
+            weight_patterns = [
+                'total weight', 'weight total', 'total wt', 'net weight', 'gross weight',
+                'total package', 'package total', 'total packages', 'packages total',
+                'إجمالي الوزن', 'الوزن الإجمالي', 'الوزن الكلي',
+                'إجمالي الحزم', 'الحزم الإجمالية'
+            ]
+
+            if any(pattern in cell_clean for pattern in weight_patterns):
+                # Try to extract the numeric value directly from the description
+                # This handles formats like "TOTAL WEIGHT:+ 2KG" or "TOTAL PACKAGE:+1"
+                qty_value = 1  # Default
+                numeric_match = re.search(r'[+:]?\s*(\d+(?:\.\d+)?)', cell_val)
+
+                if numeric_match:
+                    try:
+                        qty_value = float(numeric_match.group(1))
+                    except:
+                        pass
+                else:
+                    # Look for numeric values in other cells of this row
+                    for num_col_idx, num_cell_val in row_data:
+                        if num_col_idx != col_idx:  # Skip the description cell
+                            try:
+                                num_text = str(num_cell_val).strip().replace(',', '')
+                                if num_text and is_number(num_text):
+                                    qty_value = float(num_text)
+                                    break
+                            except:
+                                continue
+
+                # Add as a product with extracted quantity and price=0
+                product = {
+                    'description': cell_val.strip(), 
+                    'invoice_number': invoice_number, 
+                    'quantity': qty_value, 
+                    'unit_price': 0
+                }
                 pattern_products.append(product)
                 is_weight_package_row = True
                 break
-                
+
         if not is_weight_package_row and has_text and num_count >= 2 and not contains_payment_terms:
             # Identify which column contains the description (usually the longest text)
             desc_col = None
@@ -860,6 +1066,208 @@ def extract_product_details(df, invoice_number=None):
     # If we found products with pattern matching
     if pattern_products:
         products.extend(pattern_products)
+
+    # Check for total weight and package information in rows below the last product
+    # This handles cases where these details are outside the formal table structure
+    if last_product_row > 0:
+        # Define weight and package patterns to look for
+        weight_package_patterns = [
+            'total weight', 'weight total', 'total wt', 'net weight', 'gross weight',
+            'total package', 'package total', 'total packages', 'packages total',
+            'إجمالي الوزن', 'الوزن الإجمالي', 'الوزن الكلي',
+            'إجمالي الحزم', 'الحزم الإجمالية'
+        ]
+
+        # Check 5 rows below the last product row for any weight/package information
+        for extra_row in range(last_product_row + 1, min(last_product_row + 6, len(df))):
+            for col in range(len(df.columns)):
+                try:
+                    cell_text = str(df.iloc[extra_row, col]).strip()
+                    cell_lower = cell_text.lower()
+
+                    # Skip empty cells
+                    if not cell_text or cell_text.lower() == 'nan':
+                        continue
+
+                    # Look specifically for "TOTAL WEIGHT=" and "TOTAL PACKAGE=" formats
+                    exact_pattern_match = False
+                    if ('total weight' in cell_lower and ('=' in cell_text or ':' in cell_text)) or \
+                       ('total package' in cell_lower and ('=' in cell_text or ':' in cell_text)):
+                        exact_pattern_match = True
+
+                    # Check if this cell contains weight/package information
+                    if exact_pattern_match or any(pattern in cell_lower for pattern in weight_package_patterns):
+                        # Extract numeric value if present in the text
+                        qty_value = 1  # Default quantity
+                        num_match = re.search(r'[=:]?\s*(\d+(?:\.\d+)?)', cell_text)
+                        if num_match:
+                            try:
+                                qty_value = float(num_match.group(1))
+                            except:
+                                pass
+
+                        # Check if there's a unit attached to the number (like "2KG")
+                        unit_match = re.search(r'[=:]?\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)', cell_text)
+                        if unit_match:
+                            try:
+                                qty_value = float(unit_match.group(1))
+                            except:
+                                pass
+
+                        # Check other cells in this row for a numeric value if not found in text
+                        if num_match is None and unit_match is None:
+                            for j in range(len(df.columns)):
+                                if j != col:  # Skip the current cell
+                                    other_cell = str(df.iloc[extra_row, j]).strip().replace(',', '')
+                                    if other_cell and other_cell.lower() != 'nan':
+                                        try:
+                                            # Try to parse as a number
+                                            numeric_val = float(other_cell)
+                                            qty_value = numeric_val
+                                            break
+                                        except:
+                                            # Try to extract numeric part
+                                            num_match = re.search(r'(\d+(?:\.\d+)?)', other_cell)
+                                            if num_match:
+                                                try:
+                                                    qty_value = float(num_match.group(1))
+                                                    break
+                                                except:
+                                                    pass
+
+                        # Create a product entry for this weight/package information
+                        weight_product = {
+                            'description': cell_text,
+                            'invoice_number': invoice_number,
+                            'quantity': qty_value,
+                            'unit_price': 0  # Default price for weight/package information
+                        }
+
+                        # Add this as a product
+                        products.append(weight_product)
+                except:
+                    # Skip if there's an error accessing this cell
+                    continue
+
+    # Fallback method: Direct search for common weight/package text patterns like "TOTAL WEIGHT= 2KG"
+    # This handles cases where these details might be missed by other methods
+    weight_package_exact_patterns = [
+        'total weight', 'weight=', 'weight =', 'weight:', 'weight :', 'weight', 'wt',
+        'total package', 'package=', 'package =', 'package:', 'package :', 'package', 'pkg',
+        'totalweight', 'weighttotal', 'totalwt', 'netweight', 'grossweight',
+        'totalpackage', 'packagetotal', 'totalpackages', 'packagestotal'
+    ]
+
+    # Common typos to detect in a fuzzy manner
+    weight_typos = ['weght', 'wieght', 'weignt', 'waight']
+    package_typos = ['packge', 'packg', 'pakage']
+
+    # Additional exact matches to detect specifically (case-sensitive)
+    critical_exact_matches = [
+        'TOTAL WEIGHT', 'TOTAL PACKAGE', 'WEIGHT', 'PACKAGE'
+    ]
+
+    # Scan the entire dataframe for exact patterns that might be missed
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            try:
+                cell_text = str(df.iloc[i, j]).strip()
+                if not cell_text or cell_text.lower() == 'nan':
+                    continue
+
+                cell_lower = cell_text.lower()
+
+                # Direct match for critical patterns case-sensitive
+                is_critical_match = any(pattern in cell_text for pattern in critical_exact_matches)
+
+                # Check for the pattern in lowercase (more general detection)
+                is_pattern_match = any(pattern in cell_lower for pattern in weight_package_exact_patterns)
+
+                # Check for typos and variations
+                cell_normalized = ''.join(c.lower() for c in cell_text if c.isalnum())
+                typo_match = (any(typo in cell_lower for typo in weight_typos) and 'total' in cell_lower) or \
+                             (any(typo in cell_lower for typo in package_typos) and 'total' in cell_lower)
+
+                # Check for exact "TOTAL WEIGHT=" format (case-sensitive)
+                special_case_match = 'TOTAL WEIGHT' in cell_text or 'TOTAL PACKAGE' in cell_text
+
+                # Check for other common formats that might be missed
+                formats_match = ('weight' in cell_lower and ('=' in cell_text or ':' in cell_text or 'total' in cell_lower)) or \
+                               ('package' in cell_lower and ('=' in cell_text or ':' in cell_text or 'total' in cell_lower))
+
+                # Process if any match condition is true
+                if is_critical_match or is_pattern_match or special_case_match or typo_match or formats_match:
+                    # Check if this product was already added (avoid duplicates)
+                    already_added = False
+                    for p in products:
+                        if p.get('description', '').lower() == cell_lower:
+                            already_added = True
+                            break
+
+                    if not already_added:
+                        # Extract numeric value if present in the text
+                        qty_value = 1  # Default quantity
+
+                        # First try more specific patterns with separators like "=2KG", "= 2KG", ": 2KG"
+                        num_match = re.search(r'[=:+]\s*(\d+(?:\.\d+)?)\s*(?:[a-zA-Z]*)', cell_text)
+                        if num_match:
+                            try:
+                                qty_value = float(num_match.group(1))
+                            except:
+                                pass
+                        else:
+                            # Try patterns with spaces: "TOTAL WEIGHT 2KG"
+                            alt_match = re.search(r'(?:WEIGHT|PACKAGE|weight|package)\s+(\d+(?:\.\d+)?)\s*(?:[a-zA-Z]*)', cell_text)
+                            if alt_match:
+                                try:
+                                    qty_value = float(alt_match.group(1))
+                                except:
+                                    pass
+                            else:
+                                # Very broad pattern to match any number in the text (last resort)
+                                broad_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:[a-zA-Z]*)', cell_text)
+                                if broad_match:
+                                    try:
+                                        qty_value = float(broad_match.group(1))
+                                    except:
+                                        pass
+                                else:
+                                    # If still no match, check nearby cells
+                                    # Check cells to the right for numeric values
+                                    for k in range(1, 3):  # Check next 2 cells to the right
+                                        if j + k < len(df.columns):
+                                            right_cell = str(df.iloc[i, j + k]).strip()
+                                            if right_cell and right_cell.lower() != 'nan':
+                                                # Try to convert to number or extract numeric part
+                                                try:
+                                                    qty_value = float(right_cell.replace(',', ''))
+                                                    break
+                                                except:
+                                                    num_extract = re.search(r'(\d+(?:\.\d+)?)', right_cell)
+                                                    if num_extract:
+                                                        try:
+                                                            qty_value = float(num_extract.group(1))
+                                                            break
+                                                        except:
+                                                            pass
+
+                        # Create a product entry
+                        weight_product = {
+                            'description': cell_text,
+                            'invoice_number': invoice_number,
+                            'quantity': qty_value,
+                            'unit_price': 0  # Default price
+                        }
+
+                        # Add this as a product
+                        products.append(weight_product)
+
+                        # Add logging for debugging
+                        print(f"Extracted weight/package: {cell_text} with qty: {qty_value}")
+            except Exception as e:
+                # Skip if there's an error accessing this cell
+                print(f"Error processing cell for weight/package: {str(e)}")
+                continue
 
     # Return whatever products we found
     return products
