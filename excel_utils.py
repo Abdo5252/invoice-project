@@ -46,28 +46,38 @@ def create_output_excel(processed_invoices, template_file=None):
     header_sheet = workbook.active
     header_sheet.title = "Header"
     header_sheet.append(["Document Type", "Document Number", "Document Date", "Customer Code", 
-                        "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code"])
+                        "Currency Code", "Exchange Rate", "Extra Discount", "Activity Code", "Total Amount"])
     
     # Set up Items sheet
     items_sheet = workbook.create_sheet(title="Items")
-    items_sheet.append(["Document Number", "Description", "Unit Type", "Quantity", 
+    items_sheet.append(["Document Number", "Internal Code", "Description", "Unit Type", "Quantity", 
                        "Unit Price", "Discount Amount", "Value Difference", "Item Discount"])
     
-    # Current date as fallback for document date
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    # Always use current date for document date
+    current_date = datetime.now().strftime("%m/%d/%Y")
     
     # Process each invoice
     for invoice in processed_invoices:
         # Add header row for this invoice
+        # Set exchange rate based on currency: 52 for USD, 60 for EUR, 0 for others
+        currency = invoice.get('currency', '')
+        exchange_rate = "0"  # Default exchange rate
+        
+        if currency == 'USD':
+            exchange_rate = "52"
+        elif currency == 'EUR':
+            exchange_rate = "60"  # Exchange rate for Euro
+        
         header_sheet.append([
             "I",  # Document Type (Always "I" as per requirements)
             invoice.get('invoice_number', ''),  # Document Number
-            invoice.get('invoice_date', current_date),  # Document Date (using extracted date or current date as fallback)
+            current_date,  # Document Date (always use current date)
             invoice.get('customer_code', ''),  # Customer Code
             invoice.get('currency', ''),  # Currency Code
-            "0",  # Exchange Rate (default to 0 as per requirements)
+            exchange_rate,  # Exchange Rate (based on currency)
             "0",  # Extra Discount (default to 0 as per requirements)
-            ""   # Activity Code (empty if not available as per requirements)
+            "",   # Activity Code (empty if not available as per requirements)
+            invoice.get('total_amount', 0)  # Total Invoice Amount
         ])
         
         # Add product rows for this invoice
@@ -79,6 +89,7 @@ def create_output_excel(processed_invoices, template_file=None):
                 
                 items_sheet.append([
                     doc_number,  # Document Number (links to header)
+                    "1",  # Internal Code (always 1 as requested)
                     product.get('description', ''),  # Description
                     product.get('unit_type', ''),  # Unit Type (leave blank if not found as per requirements)
                     product.get('quantity', ''),  # Quantity
@@ -87,6 +98,24 @@ def create_output_excel(processed_invoices, template_file=None):
                     "0",  # Value Difference (default to 0 as per requirements)
                     "0"   # Item Discount (default to 0 as per requirements)
                 ])
+    
+    # Auto-size columns in both sheets
+    for sheet in [header_sheet, items_sheet]:
+        for column in sheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            
+            # Find the maximum content length in each column
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            
+            # Set column width (with some padding)
+            adjusted_width = (max_length + 2)
+            sheet.column_dimensions[column_letter].width = adjusted_width
     
     # Save the workbook to the BytesIO object
     workbook.save(output)
