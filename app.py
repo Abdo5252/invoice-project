@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+from datetime import datetime
 from invoice_processor import process_invoices
 from excel_utils import create_output_excel
 
@@ -59,23 +60,37 @@ if uploaded_messy_file:
 
                     for invoice in processed_data:
                         # Add header row
+                        # Set exchange rate based on currency: 52 for USD, 60 for EUR, 0 for others
+                        currency = invoice.get('currency', '')
+                        exchange_rate = "0"  # Default exchange rate
+                        
+                        if currency == 'USD':
+                            exchange_rate = "52"
+                        elif currency == 'EUR':
+                            exchange_rate = "60"  # Exchange rate for Euro
+                        
+                        # Get current date for document date
+                        current_date = datetime.now().strftime("%m/%d/%Y")
+                        
                         headers_data.append({
                             "Document Type":
                             "I",
                             "Document Number":
                             invoice.get('invoice_number', ''),
                             "Document Date":
-                            invoice.get('invoice_date', ''),
+                            current_date,
                             "Customer Code":
                             invoice.get('customer_code', ''),
                             "Currency Code":
                             invoice.get('currency', ''),
                             "Exchange Rate":
-                            "0",
+                            exchange_rate,
                             "Extra Discount":
                             "0",
                             "Activity Code":
-                            ""
+                            "",
+                            "Total Amount":
+                            invoice.get('total_amount', 0)
                         })
 
                         # Add product rows
@@ -84,6 +99,8 @@ if uploaded_messy_file:
                                 items_data.append({
                                     "Document Number":
                                     invoice.get('invoice_number', ''),
+                                    "Internal Code":
+                                    "1",
                                     "Description":
                                     product.get('description', ''),
                                     "Unit Type":
@@ -130,13 +147,16 @@ if uploaded_messy_file:
                                 f"**Invoice Number:** {invoice.get('invoice_number', 'Not found')}"
                             )
                             st.write(
-                                f"**Document Date:** {invoice.get('invoice_date', 'Not found')}"
+                                f"**Document Date:** {datetime.now().strftime('%m/%d/%Y')}"
                             )
                             st.write(
                                 f"**Customer Code:** {invoice.get('customer_code', 'Not found')}"
                             )
                             st.write(
                                 f"**Currency:** {invoice.get('currency', 'Not found')}"
+                            )
+                            st.write(
+                                f"**Total Amount:** {invoice.get('total_amount', 0)} {invoice.get('currency', '')}"
                             )
 
                             if 'products' in invoice and invoice['products']:
@@ -183,5 +203,5 @@ with st.expander("About this app"):
     - All data is output in two sheets: "Header" sheet and "Items" sheet
     - Document Numbers link Header entries to their corresponding Item rows
     
-    ### Made with  Abdelrhman Adel
+    ### Made by Abdelrhman Adel
     """)
