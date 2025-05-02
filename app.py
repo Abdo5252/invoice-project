@@ -60,14 +60,12 @@ if uploaded_messy_file:
 
                     for invoice in processed_data:
                         # Add header row
-                        # Set exchange rate based on currency: 52 for USD, 60 for EUR, 0 for others
+                        # Set exchange rate based on currency: 52 for USD, 0 for others
                         currency = invoice.get('currency', '')
                         exchange_rate = "0"  # Default exchange rate
                         
                         if currency == 'USD':
                             exchange_rate = "52"
-                        elif currency == 'EUR':
-                            exchange_rate = "60"  # Exchange rate for Euro
                         
                         # Get current date for document date
                         current_date = datetime.now().strftime("%m/%d/%Y")
@@ -203,5 +201,5 @@ with st.expander("About this app"):
     - All data is output in two sheets: "Header" sheet and "Items" sheet
     - Document Numbers link Header entries to their corresponding Item rows
     
-    ### Made by Abdelrhman Adel
+    ### Made by  Abdelrhman Adel
     """)
