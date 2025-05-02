@@ -10,16 +10,16 @@ def fix_encoding(text):
     Attempts to fix corrupted Arabic text by decoding it using 'windows-1256' 
     after encoding with 'latin1'. Preserves the original encoded text
     in cases where exact pattern matching is needed.
-    
+
     Args:
         text: The potentially corrupted text string
-        
+
     Returns:
         Fixed text string if successful, or original text if decoding fails
     """
     if not isinstance(text, str):
         return text
-    
+
     # Check for exact encoded string patterns that we want to preserve for matching
     exact_encoded_patterns = [
         "ÝÇÊæÑÉ / INVOICE  N°:",
@@ -29,12 +29,12 @@ def fix_encoding(text):
         "ÇáßãíÉ\nQuantity",
         "ÓÚÑ ÇáæÍÏÉ\nUnit price"
     ]
-    
+
     # Preserve exact pattern if found
     for pattern in exact_encoded_patterns:
         if pattern in text:
             return text
-            
+
     try:
         # Convert corrupted Arabic text using windows-1256 encoding
         # First encode to latin1 bytes, then decode using windows-1256
@@ -48,42 +48,42 @@ def calculate_invoice_total(products):
     """
     Calculate the total amount for an invoice based on its products.
     Ignores products with unit price of zero.
-    
+
     Args:
         products: List of product dictionaries with quantity and unit_price
-        
+
     Returns:
         Total amount as float
     """
     total = 0.0
-    
+
     if not products:
         return total
-        
+
     for product in products:
         quantity = product.get('quantity', 0)
         unit_price = product.get('unit_price', 0)
-        
+
         # Convert to float if they are strings
         if isinstance(quantity, str):
             try:
                 quantity = float(quantity.replace(',', ''))
             except (ValueError, AttributeError):
                 quantity = 0
-                
+
         if isinstance(unit_price, str):
             try:
                 unit_price = float(unit_price.replace(',', ''))
             except (ValueError, AttributeError):
                 unit_price = 0
-        
+
         # Skip products with zero unit price
         if unit_price <= 0:
             continue
-                
+
         # Add to total
         total += quantity * unit_price
-        
+
     return round(total, 2)
 
 def process_invoices(uploaded_file):
@@ -113,19 +113,19 @@ def process_invoices(uploaded_file):
             # Convert DataFrame to ensure all values are strings for text searching
             # Replace NaN with empty string to avoid errors during text search
             df_string = df.astype(str).replace('nan', '', regex=True)
-            
+
             # Create a copy of the original DataFrame for exact pattern matching
             df_original = df_string.copy()
-            
+
             # Apply fix_encoding to all text values in the DataFrame
             for i in range(len(df_string)):
                 for j in range(len(df_string.columns)):
                     df_string.iloc[i, j] = fix_encoding(df_string.iloc[i, j])
-                    
+
             # First try extraction with original encoding (for exact pattern matching)
             invoice_number = extract_invoice_number(df_original)
             customer_code = extract_customer_code(df_original)
-            
+
             # If extraction fails with original encoding, try with fixed encoding
             if not invoice_number:
                 invoice_number = extract_invoice_number(df_string)
@@ -135,12 +135,12 @@ def process_invoices(uploaded_file):
             # Currency and date are less sensitive to encoding issues
             currency = extract_currency(df_string)
             invoice_date = extract_invoice_date(df_string)
-            
+
             # For products, try with original encoding first, then with fixed encoding if needed
             products = extract_product_details(df_original, invoice_number)
             if not products:
                 products = extract_product_details(df_string, invoice_number)
-                
+
             # Calculate the total invoice amount
             total_amount = calculate_invoice_total(products)
 
@@ -180,7 +180,7 @@ def extract_invoice_number(df):
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            
+
             # Check if any of the invoice keywords are in the cell
             if any(keyword in cell for keyword in invoice_n_keywords):
                 # Extract invoice number directly from this cell 
@@ -192,7 +192,7 @@ def extract_invoice_number(df):
                             # Validate it follows the SIxxxxx pattern
                             if re.match(r'^SI\d+$', invoice_num):
                                 return invoice_num
-                
+
                 # Also look for SI pattern in the same cell
                 si_match = re.search(r'SI\d+', cell)
                 if si_match:
@@ -281,7 +281,7 @@ def extract_customer_code(df):
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            
+
             if any(keyword in cell for keyword in partner_code_keywords):
                 # Try to extract the customer code directly from this cell
                 for keyword in partner_code_keywords:
@@ -292,7 +292,7 @@ def extract_customer_code(df):
                             # Validate it follows the Cxxxx pattern
                             if re.match(r'^C\d+$', code):
                                 return code
-                
+
                 # Also check for C pattern in the same cell
                 c_match = re.search(r'C\d+', cell)
                 if c_match and re.match(r'^C\d+$', c_match.group(0)):
@@ -414,16 +414,8 @@ def extract_currency(df):
             if any(indicator in cell for indicator in usd_indicators):
                 return 'USD'
 
-    # Look for Euro mentions - they indicate EUR currency
-    eur_indicators = ['€', 'euro', 'eur', 'يورو', 'european', 'europe']
-    for i in range(len(df)):
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).lower()
-            if any(indicator in cell for indicator in eur_indicators):
-                return 'EUR'
-
     # Look for Egypt mentions - they indicate EGP currency
-    egp_indicators = ['egypt', 'egyptian', 'egp', 'مصر', 'مصري', 'جنيه']
+    egp_indicators = ['egypt', 'egyptian', 'egp', 'مصر', 'مصري', 'جنيه', 'le', 'l.e.', 'pound']
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
@@ -439,8 +431,6 @@ def extract_currency(df):
                 # Check the cell itself
                 if 'usd' in cell or 'dollar' in cell or '$' in cell:
                     return 'USD'
-                if 'eur' in cell or 'euro' in cell or '€' in cell:
-                    return 'EUR'
                 if 'egp' in cell or 'egypt' in cell:
                     return 'EGP'
 
@@ -449,8 +439,6 @@ def extract_currency(df):
                     right_cell = str(df.iloc[i, j + 1]).lower()
                     if right_cell == 'usd' or right_cell == 'dollar' or right_cell == '$':
                         return 'USD'
-                    if right_cell == 'eur' or right_cell == 'euro' or right_cell == '€':
-                        return 'EUR'
                     if right_cell == 'egp' or right_cell == 'egypt':
                         return 'EGP'
 
@@ -930,12 +918,12 @@ def extract_product_details(df, invoice_number=None):
             # If we found a description column
             if desc_col is not None:
                 description = str(df.iloc[i, desc_col]).strip()
-                
+
                 # Skip weight and package related descriptions
                 desc_lower = description.lower()
                 if any(pattern in desc_lower for pattern in ['weight', 'package', 'pkg', 'wt']):
                     continue
-                    
+
                 product = {'description': description, 'invoice_number': invoice_number}
 
                 # Find numeric columns (potential quantity/price)
