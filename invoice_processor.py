@@ -530,7 +530,7 @@ def extract_product_details(df, invoice_number=None):
     """
     Extract product details from structured invoice tables.
     Focuses on the specific format with Description, Quantity, and Unit price columns.
-    Ignores weight/packaging information and products with zero unit price.
+    Also captures shipping-related rows (weight/packages/cartons) as non-billable line items.
 
     Args:
         df: DataFrame with string values
@@ -541,6 +541,156 @@ def extract_product_details(df, invoice_number=None):
     """
     products = []
     last_product_row = -1  # Track the last row where we found a product
+    seen_item_signatures = set()
+
+    def _safe_str(val):
+        try:
+            s = str(val)
+        except Exception:
+            return ""
+        if not s or s.lower() == "nan":
+            return ""
+        return s.strip()
+
+    def _to_float_maybe(val):
+        """
+        Convert common numeric strings like '1,200.50' to float.
+        Returns None if conversion fails.
+        """
+        s = _safe_str(val)
+        if not s:
+            return None
+        # Keep digits, comma, dot, minus; strip units/symbols.
+        cleaned = re.sub(r"[^\d,\.\-]+", " ", s)
+        cleaned = cleaned.strip()
+        if not cleaned:
+            return None
+
+        # Prefer the last-looking number token (often value at end of description).
+        tokens = re.findall(r"-?\d[\d,]*\.?\d*", cleaned)
+        if not tokens:
+            return None
+        token = tokens[-1].replace(",", "")
+        try:
+            return float(token)
+        except Exception:
+            return None
+
+    def _classify_shipping_item(text):
+        """
+        Flexible detection for shipping-related rows (weights/packages/cartons).
+        Returns "weight", "package", or None.
+        """
+        t = _safe_str(text).lower()
+        if not t:
+            return None
+        # Normalize punctuation/whitespace to improve fuzzy matching
+        t_norm = re.sub(r"[\.\:\;\,\|\(\)\[\]\{\}]+", " ", t)
+        t_norm = re.sub(r"\s+", " ", t_norm).strip()
+
+        # Weight signals (typo-tolerant + common abbreviations)
+        weight_re = re.compile(
+            r"\b("
+            r"net\s*(wt|wgt|weight|weigth|wieght)|"
+            r"gross\s*(wt|wgt|weight|weigth|wieght)|"
+            r"total\s*(wt|wgt|weight|weigth|wieght)|"
+            r"(wt|wgt)\b|"
+            r"(weight|weigth|wieght)\b"
+            r")\b",
+            re.IGNORECASE,
+        )
+        # Package/carton signals (including partial/abbrev)
+        package_re = re.compile(
+            r"\b("
+            r"pkg|pkgs|pckg|packag(e|es)|packs?|"
+            r"packo|pako|packnge|"
+            r"box|boxes|bx|"
+            r"carton(s)?|cartn|ctn|ctns?|"
+            r"no\.?\s*of\s*(carton(s)?|pkg|pkgs|packages?)|"
+            r"total\s*(pkg|pkgs|packages?|carton(s)?|ctn|ctns?|box|boxes|bx)"
+            r")\b",
+            re.IGNORECASE,
+        )
+
+        if weight_re.search(t_norm):
+            return "weight"
+        if package_re.search(t_norm):
+            return "package"
+        return None
+
+    def _extract_shipping_quantity(df_, row_idx, primary_col_idx):
+        """
+        Extract numeric value from the same cell, adjacent right cell,
+        or elsewhere in the row. Returns float or None.
+        """
+        # Same cell
+        v = _to_float_maybe(df_.iloc[row_idx, primary_col_idx])
+        if v is not None:
+            return v
+
+        # Adjacent cell (common pattern: label in desc col, value next col)
+        if primary_col_idx + 1 < len(df_.columns):
+            v = _to_float_maybe(df_.iloc[row_idx, primary_col_idx + 1])
+            if v is not None:
+                return v
+
+        # Scan other cells in the row (pick the first valid number)
+        for c in range(len(df_.columns)):
+            if c == primary_col_idx:
+                continue
+            v = _to_float_maybe(df_.iloc[row_idx, c])
+            if v is not None:
+                return v
+        return None
+
+    def _find_shipping_in_row(df_, row_idx, preferred_col=None):
+        """
+        Find a shipping-related label anywhere in the row.
+        Returns (col_idx, text, item_type) or (None, None, None).
+        """
+        # Prefer the "description" column if provided (fast path)
+        if preferred_col is not None:
+            t = _safe_str(df_.iloc[row_idx, preferred_col])
+            item_type = _classify_shipping_item(t)
+            if item_type:
+                return preferred_col, t, item_type
+
+        # Otherwise scan across row
+        for c in range(len(df_.columns)):
+            t = _safe_str(df_.iloc[row_idx, c])
+            if not t:
+                continue
+            item_type = _classify_shipping_item(t)
+            if item_type:
+                return c, t, item_type
+        return None, None, None
+
+    def _normalize_desc_for_key(text):
+        t = _safe_str(text).lower()
+        if not t:
+            return ""
+        t = re.sub(r"\s+", " ", t)
+        return t.strip()
+
+    def _add_product_once(target_list, product):
+        """
+        Prevent duplicates across all extraction methods/passes.
+        """
+        desc_key = _normalize_desc_for_key(product.get('description', ''))
+        item_type_key = _safe_str(product.get('item_type', '')).lower()
+        # For shipping items we store the extracted numeric in shipping_value.
+        ship_val = product.get('shipping_value', None)
+        try:
+            ship_val_key = float(ship_val) if ship_val is not None else None
+        except Exception:
+            ship_val_key = str(ship_val)
+
+        signature = (invoice_number, desc_key, item_type_key, ship_val_key, float(product.get('unit_price', 0) or 0))
+        if signature in seen_item_signatures:
+            return False
+        seen_item_signatures.add(signature)
+        target_list.append(product)
+        return True
 
     # Method 1: Look for "Invoice details" section which contains the product table
     for i in range(len(df)):
@@ -591,15 +741,39 @@ def extract_product_details(df, invoice_number=None):
                             desc_text.lower() in ['description', 'total', 'amount', 'وصف', 'المجموع'] or
                             'ÔÑæØ ÇáÏÝÚ' in desc_text or 
                             'term of payment' in desc_text.lower()):
+                            # If description cell is empty/header-like, shipping info might be in another column.
+                            ship_col, ship_text, ship_type = _find_shipping_in_row(df, data_row, preferred_col=None)
+                            if ship_type:
+                                qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                                if qty_val is not None and qty_val > 0:
+                                    _add_product_once(table_products, {
+                                        'description': ship_text,
+                                        'invoice_number': invoice_number,
+                                        'quantity': 1.0,
+                                        'unit_price': 0.0,
+                                        'item_type': ship_type,
+                                        'shipping_value': qty_val,
+                                        'non_billable': True
+                                    })
+                                    last_product_row = data_row
                             continue
 
-                        # Skip any weight or package related items
-                        desc_lower = desc_text.lower().strip()
-                        weight_patterns = [
-                            'total weight', 'weight total', 'total wt', 'net weight', 'gross weight',
-                            'total package', 'package total', 'total packages', 'packages total'
-                        ]
-                        if any(pattern in desc_lower for pattern in weight_patterns):
+                        # Capture shipping-related rows as non-billable items (weight/packages/cartons)
+                        ship_col, ship_text, item_type = _find_shipping_in_row(df, data_row, preferred_col=desc_col)
+                        if item_type:
+                            qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                            if qty_val is not None and qty_val > 0:
+                                product = {
+                                    'description': ship_text,
+                                    'invoice_number': invoice_number,
+                                    'quantity': 1.0,
+                                    'unit_price': 0.0,
+                                    'item_type': item_type,
+                                    'shipping_value': qty_val,
+                                    'non_billable': True
+                                }
+                                _add_product_once(table_products, product)
+                                last_product_row = data_row
                             continue
 
                         # Create product entry for regular products
@@ -682,7 +856,7 @@ def extract_product_details(df, invoice_number=None):
                     header_cols['price'] = j
                     header_matches += 1
 
-            # If we found at least 2 matching headers, this is likely a product table
+            # If we found at least 2 matching headers, this is likely Aa product table
             if header_matches >= 2 and 'description' in header_cols:
                 table_products = []
 
@@ -699,15 +873,37 @@ def extract_product_details(df, invoice_number=None):
                         desc_text.lower() in desc_headers + ['total', 'subtotal', 'المجموع'] or
                         'ÔÑæØ ÇáÏÝÚ' in desc_text or 
                         'term of payment' in desc_text.lower()):
+                        # Shipping info may be placed outside the description column.
+                        ship_col, ship_text, ship_type = _find_shipping_in_row(df, data_row, preferred_col=None)
+                        if ship_type:
+                            qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                            if qty_val is not None and qty_val > 0:
+                                _add_product_once(table_products, {
+                                    'description': ship_text,
+                                    'invoice_number': invoice_number,
+                                    'quantity': 1.0,
+                                    'unit_price': 0.0,
+                                    'item_type': ship_type,
+                                    'shipping_value': qty_val,
+                                    'non_billable': True
+                                })
                         continue
 
-                    # Skip any weight or package related items using simplified pattern check
-                    desc_lower = desc_text.lower().strip()
-                    weight_patterns = [
-                        'total weight', 'weight', 'wt', 'package', 'pkg', 
-                        'total package', 'packages'
-                    ]
-                    if any(pattern in desc_lower for pattern in weight_patterns):
+                    # Capture shipping-related rows as non-billable items
+                    ship_col, ship_text, item_type = _find_shipping_in_row(df, data_row, preferred_col=header_cols['description'])
+                    if item_type:
+                        qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                        if qty_val is not None and qty_val > 0:
+                            product = {
+                                'description': ship_text,
+                                'invoice_number': invoice_number,
+                                'quantity': 1.0,
+                                'unit_price': 0.0,
+                                'item_type': item_type,
+                                'shipping_value': qty_val,
+                                'non_billable': True
+                            }
+                            _add_product_once(table_products, product)
                         continue
 
                     # Create product
@@ -796,14 +992,36 @@ def extract_product_details(df, invoice_number=None):
                             try:
                                 desc_text = str(df.iloc[data_row, desc_col]).strip()
                                 if not desc_text or desc_text.lower() in ['description', 'total', 'amount', 'المجموع']:
+                                    ship_col, ship_text, ship_type = _find_shipping_in_row(df, data_row, preferred_col=None)
+                                    if ship_type:
+                                        qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                                        if qty_val is not None and qty_val > 0:
+                                            _add_product_once(special_products, {
+                                                'description': ship_text,
+                                                'invoice_number': invoice_number,
+                                                'quantity': 1.0,
+                                                'unit_price': 0.0,
+                                                'item_type': ship_type,
+                                                'shipping_value': qty_val,
+                                                'non_billable': True
+                                            })
                                     continue
 
-                                # Skip any weight or package related items
-                                desc_lower = desc_text.lower().strip()
-                                weight_patterns = [
-                                    'total weight', 'weight', 'wt', 'package', 'pkg'
-                                ]
-                                if any(pattern in desc_lower for pattern in weight_patterns):
+                                # Capture shipping-related rows as non-billable items
+                                ship_col, ship_text, item_type = _find_shipping_in_row(df, data_row, preferred_col=desc_col)
+                                if item_type:
+                                    qty_val = _extract_shipping_quantity(df, data_row, ship_col)
+                                    if qty_val is not None and qty_val > 0:
+                                        product = {
+                                            'description': ship_text,
+                                            'invoice_number': invoice_number,
+                                            'quantity': 1.0,
+                                            'unit_price': 0.0,
+                                            'item_type': item_type,
+                                            'shipping_value': qty_val,
+                                            'non_billable': True
+                                        }
+                                        _add_product_once(special_products, product)
                                     continue
 
                                 product = {'description': desc_text, 'invoice_number': invoice_number}
@@ -872,7 +1090,33 @@ def extract_product_details(df, invoice_number=None):
             except:
                 continue
 
-        # Skip empty rows
+        # Shipping rows can be very sparse (1-2 filled cells), so try capturing them first.
+        shipping_type = None
+        shipping_desc_col = None
+        shipping_desc_text = None
+        for col_idx, cell_val in row_data:
+            t = _classify_shipping_item(cell_val)
+            if t:
+                shipping_type = t
+                shipping_desc_col = col_idx
+                shipping_desc_text = _safe_str(cell_val)
+                break
+
+        if shipping_type and shipping_desc_col is not None and not contains_payment_terms:
+            qty_val = _extract_shipping_quantity(df, i, shipping_desc_col)
+            if shipping_desc_text and qty_val is not None and qty_val > 0:
+                _add_product_once(pattern_products, {
+                    'description': shipping_desc_text,
+                    'invoice_number': invoice_number,
+                    'quantity': 1.0,
+                    'unit_price': 0.0,
+                    'item_type': shipping_type,
+                    'shipping_value': qty_val,
+                    'non_billable': True
+                })
+            continue
+
+        # Skip rows too short for regular product pattern detection
         if len(row_data) < 3:
             continue
 
@@ -895,17 +1139,7 @@ def extract_product_details(df, invoice_number=None):
                 contains_payment_terms = True
                 break
 
-        # Skip weight/package related rows
-        is_weight_package_row = False
-        for _, cell_val in row_data:
-            cell_lower = cell_val.lower().strip()
-            # Simple list of weight/package keywords
-            weight_patterns = ['weight', 'package', 'pkg', 'wt']
-            if any(pattern in cell_lower for pattern in weight_patterns):
-                is_weight_package_row = True
-                break
-
-        if not is_weight_package_row and has_text and num_count >= 2 and not contains_payment_terms:
+        if has_text and num_count >= 2 and not contains_payment_terms:
             # Identify which column contains the description (usually the longest text)
             desc_col = None
             desc_len = 0
@@ -918,11 +1152,8 @@ def extract_product_details(df, invoice_number=None):
             # If we found a description column
             if desc_col is not None:
                 description = str(df.iloc[i, desc_col]).strip()
-
-                # Skip weight and package related descriptions
-                desc_lower = description.lower()
-                if any(pattern in desc_lower for pattern in ['weight', 'package', 'pkg', 'wt']):
-                    continue
+                # Keep backward compatibility: regular-product extraction doesn't treat shipping rows as products here.
+                # (Shipping rows are handled above and marked non-billable.)
 
                 product = {'description': description, 'invoice_number': invoice_number}
 
