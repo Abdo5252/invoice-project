@@ -60,12 +60,12 @@ if uploaded_messy_file:
 
                     for invoice in processed_data:
                         # Add header row
-                        # Set exchange rate based on currency: 52 for USD, 0 for others
+                        # Set exchange rate based on currency: 49 for USD, 0 for others
                         currency = invoice.get('currency', '')
                         exchange_rate = "0"  # Default exchange rate
                         
                         if currency == 'USD':
-                            exchange_rate = "52"
+                            exchange_rate = "49"
                         
                         # Get current date for document date
                         current_date = datetime.now().strftime("%m/%d/%Y")
