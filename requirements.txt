@@ -2,7 +2,3 @@ streamlit
 pandas
 numpy
 openpyxl
-numpy
-openpyxl
-pandas
-streamlit
