@@ -543,14 +543,20 @@ def extract_product_details(df, invoice_number=None):
     last_product_row = -1  # Track the last row where we found a product
     seen_item_signatures = set()
 
+    # Treat common missing-value string forms (pandas/NumPy/NA) as empty
+    _NULLISH_CELL = frozenset({"nan", "none", "<na>", "nat"})
+
     def _safe_str(val):
         try:
             s = str(val)
         except Exception:
             return ""
-        if not s or s.lower() == "nan":
+        s = s.strip()
+        if not s:
             return ""
-        return s.strip()
+        if s.lower() in _NULLISH_CELL:
+            return ""
+        return s
 
     def _to_float_maybe(val):
         """
@@ -732,7 +738,7 @@ def extract_product_details(df, invoice_number=None):
                     for data_row in range(data_start_row, len(df)):
                         # Get description - this is the key field to identify a product row
                         try:
-                            desc_text = str(df.iloc[data_row, desc_col]).strip()
+                            desc_text = _safe_str(df.iloc[data_row, desc_col])
                         except:
                             continue  # Skip if there's an error accessing this cell
 
@@ -795,6 +801,8 @@ def extract_product_details(df, invoice_number=None):
                                 if qty_text and qty_text.lower() != 'nan':
                                     try:
                                         qty_value = float(qty_text)
+                                        if not np.isfinite(qty_value):
+                                            raise ValueError("non-finite qty")
                                         product['quantity'] = qty_value
                                     except:
                                         # Keep as string if conversion fails
@@ -810,6 +818,8 @@ def extract_product_details(df, invoice_number=None):
                                 if price_text and price_text.lower() != 'nan':
                                     try:
                                         price_value = float(price_text)
+                                        if not np.isfinite(price_value):
+                                            raise ValueError("non-finite price")
                                         product['unit_price'] = price_value
                                         unit_price_value = price_value
                                     except:
@@ -856,7 +866,7 @@ def extract_product_details(df, invoice_number=None):
                     header_cols['price'] = j
                     header_matches += 1
 
-            # If we found at least 2 matching headers, this is likely Aa product table
+            # If we found at least 2 matching headers, this is likely a product table
             if header_matches >= 2 and 'description' in header_cols:
                 table_products = []
 
@@ -864,7 +874,7 @@ def extract_product_details(df, invoice_number=None):
                 for data_row in range(i + 1, min(i + 30, len(df))):
                     # Get description - the key field
                     try:
-                        desc_text = str(df.iloc[data_row, header_cols['description']]).strip()
+                        desc_text = _safe_str(df.iloc[data_row, header_cols['description']])
                     except:
                         continue
 
@@ -916,6 +926,8 @@ def extract_product_details(df, invoice_number=None):
                             if qty_text and qty_text.lower() != 'nan' and qty_text.lower() not in qty_headers:
                                 try:
                                     qty_value = float(qty_text)
+                                    if not np.isfinite(qty_value):
+                                        raise ValueError("non-finite qty")
                                     product['quantity'] = qty_value
                                 except:
                                     product['quantity'] = qty_text
@@ -930,6 +942,8 @@ def extract_product_details(df, invoice_number=None):
                             if price_text and price_text.lower() != 'nan' and price_text.lower() not in price_headers:
                                 try:
                                     price_value = float(price_text)
+                                    if not np.isfinite(price_value):
+                                        raise ValueError("non-finite price")
                                     product['unit_price'] = price_value
                                     unit_price_value = price_value
                                 except:
@@ -990,7 +1004,7 @@ def extract_product_details(df, invoice_number=None):
                         for data_row in range(start_row, min(start_row+30, len(df))):
                             # Only process if we can get a valid description
                             try:
-                                desc_text = str(df.iloc[data_row, desc_col]).strip()
+                                desc_text = _safe_str(df.iloc[data_row, desc_col])
                                 if not desc_text or desc_text.lower() in ['description', 'total', 'amount', 'المجموع']:
                                     ship_col, ship_text, ship_type = _find_shipping_in_row(df, data_row, preferred_col=None)
                                     if ship_type:
@@ -1038,6 +1052,8 @@ def extract_product_details(df, invoice_number=None):
                                     if qty_text and qty_text.lower() != 'nan':
                                         try:
                                             qty_value = float(qty_text)
+                                            if not np.isfinite(qty_value):
+                                                raise ValueError("non-finite qty")
                                             product['quantity'] = qty_value
                                         except:
                                             product['quantity'] = qty_text
@@ -1049,6 +1065,8 @@ def extract_product_details(df, invoice_number=None):
                                     if price_text and price_text.lower() != 'nan':
                                         try:
                                             price_value = float(price_text)
+                                            if not np.isfinite(price_value):
+                                                raise ValueError("non-finite price")
                                             product['unit_price'] = price_value
                                             unit_price_value = price_value
                                         except:
@@ -1072,9 +1090,9 @@ def extract_product_details(df, invoice_number=None):
     # Helper function to check if a string is a number
     def is_number(s):
         try:
-            float(str(s).replace(',', ''))
-            return True
-        except:
+            v = float(str(s).strip().replace(',', ''))
+            return bool(np.isfinite(v))
+        except (ValueError, TypeError):
             return False
 
     # Look for rows with text followed by 2+ numbers (likely description + qty + price)
@@ -1084,8 +1102,8 @@ def extract_product_details(df, invoice_number=None):
         # Get all cell values in this row
         for j in range(len(df.columns)):
             try:
-                cell_text = str(df.iloc[i, j]).strip()
-                if cell_text and cell_text.lower() != 'nan':
+                cell_text = _safe_str(df.iloc[i, j])
+                if cell_text:
                     row_data.append((j, cell_text))
             except:
                 continue
@@ -1151,7 +1169,9 @@ def extract_product_details(df, invoice_number=None):
 
             # If we found a description column
             if desc_col is not None:
-                description = str(df.iloc[i, desc_col]).strip()
+                description = _safe_str(df.iloc[i, desc_col])
+                if not description:
+                    continue
                 # Keep backward compatibility: regular-product extraction doesn't treat shipping rows as products here.
                 # (Shipping rows are handled above and marked non-billable.)
 
@@ -1169,6 +1189,8 @@ def extract_product_details(df, invoice_number=None):
                     try:
                         qty_text = str(df.iloc[i, num_cols[0]]).strip().replace(',', '')
                         qty_value = float(qty_text)
+                        if not np.isfinite(qty_value):
+                            raise ValueError("non-finite qty")
                         product['quantity'] = qty_value
                     except:
                         pass
@@ -1179,6 +1201,8 @@ def extract_product_details(df, invoice_number=None):
                         try:
                             price_text = str(df.iloc[i, num_cols[1]]).strip().replace(',', '')
                             price_value = float(price_text)
+                            if not np.isfinite(price_value):
+                                raise ValueError("non-finite price")
                             product['unit_price'] = price_value
                             unit_price_value = price_value
                         except:
