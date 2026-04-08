@@ -59,12 +59,12 @@ def create_output_excel(processed_invoices, template_file=None):
     # Process each invoice
     for invoice in processed_invoices:
         # Add header row for this invoice
-        # Set exchange rate based on currency: 49 for USD, 0 for others
+        # Set exchange rate based on currency: 54 for USD, 0 for others
         currency = invoice.get('currency', '')
         exchange_rate = "0"  # Default exchange rate
         
         if currency == 'USD':
-            exchange_rate = "49"
+            exchange_rate = "54"
         
         header_sheet.append([
             "I",  # Document Type (Always "I" as per requirements)
