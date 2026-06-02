@@ -86,6 +86,37 @@ def calculate_invoice_total(products):
 
     return round(total, 2)
 
+def extract_sas_number_item(df, invoice_number=None):
+    """
+    Extract SEWA SAS NUMBER from invoice text and return it as a non-billable item.
+
+    Expected text examples:
+    - "SAS NUMBER 123456"
+    - "SAS NUMBER: 123456"
+    """
+    sas_pattern = re.compile(r"\bSAS\s*NUMBER\b\s*[:\-#]?\s*([A-Za-z0-9\-/]+)", re.IGNORECASE)
+
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell_text = str(df.iloc[i, j]).strip()
+            if not cell_text or cell_text.lower() == 'nan':
+                continue
+
+            match = sas_pattern.search(cell_text)
+            if match:
+                sas_number = match.group(1).strip()
+                if sas_number:
+                    return {
+                        'description': f"SAS NUMBER {sas_number}",
+                        'invoice_number': invoice_number,
+                        'quantity': 1.0,
+                        'unit_price': 0.0,
+                        'item_type': 'sas_number',
+                        'non_billable': True
+                    }
+
+    return None
+
 def process_invoices(uploaded_file):
     """
     Process the uploaded Excel file containing multiple invoice sheets.
@@ -140,6 +171,22 @@ def process_invoices(uploaded_file):
             products = extract_product_details(df_original, invoice_number)
             if not products:
                 products = extract_product_details(df_string, invoice_number)
+
+            # SEWA (C0956): extract "SAS NUMBER <value>" as a dedicated non-billable item
+            customer_code_norm = str(customer_code).strip().upper() if customer_code else ""
+            if customer_code_norm == "C0956":
+                sas_item = extract_sas_number_item(df_original, invoice_number)
+                if not sas_item:
+                    sas_item = extract_sas_number_item(df_string, invoice_number)
+
+                if sas_item:
+                    sas_desc_key = re.sub(r"\s+", " ", str(sas_item.get('description', '')).strip().lower())
+                    already_exists = any(
+                        re.sub(r"\s+", " ", str(p.get('description', '')).strip().lower()) == sas_desc_key
+                        for p in products
+                    )
+                    if not already_exists:
+                        products.append(sas_item)
 
             # Calculate the total invoice amount
             total_amount = calculate_invoice_total(products)
