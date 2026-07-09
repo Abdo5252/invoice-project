@@ -462,11 +462,19 @@ def extract_currency(df):
                 return 'USD'
 
     # Look for euro or EUR mentions
-    eur_indicators = ['€', 'eur', 'euro', 'euros', 'يورو']
+    # NOTE: 'eur' and 'euro' must be matched as whole words, not substrings,
+    # because both are contained inside "Europe"/"European" (e.g. the company
+    # name "ETIC EUROPE"). A substring match would misdetect every invoice as
+    # EUR. '€' and 'يورو' are kept as substring checks since they don't appear
+    # inside unrelated words.
+    eur_word_indicators = ['eur', 'euro', 'euros']
+    eur_substring_indicators = ['€', 'يورو']
     for i in range(len(df)):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
-            if any(indicator in cell for indicator in eur_indicators):
+            cell_words = re.findall(r'\b\w+\b', cell)
+            if any(indicator in eur_word_indicators for indicator in cell_words) or \
+               any(indicator in cell for indicator in eur_substring_indicators):
                 return 'EUR'
 
     # Look for Egypt mentions - they indicate EGP currency
@@ -483,10 +491,11 @@ def extract_currency(df):
         for j in range(len(df.columns)):
             cell = str(df.iloc[i, j]).lower()
             if any(keyword in cell for keyword in currency_keywords):
+                cell_words = re.findall(r'\b\w+\b', cell)
                 # Check the cell itself
                 if 'usd' in cell or 'dollar' in cell or '$' in cell:
                     return 'USD'
-                if 'eur' in cell or 'euro' in cell or '€' in cell:
+                if 'eur' in cell_words or 'euro' in cell_words or 'euros' in cell_words or '€' in cell:
                     return 'EUR'
                 if 'egp' in cell or 'egypt' in cell:
                     return 'EGP'
