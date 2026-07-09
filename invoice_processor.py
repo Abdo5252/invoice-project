@@ -461,6 +461,14 @@ def extract_currency(df):
             if any(indicator in cell for indicator in usd_indicators):
                 return 'USD'
 
+    # Look for euro or EUR mentions
+    eur_indicators = ['€', 'eur', 'euro', 'euros', 'يورو']
+    for i in range(len(df)):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).lower()
+            if any(indicator in cell for indicator in eur_indicators):
+                return 'EUR'
+
     # Look for Egypt mentions - they indicate EGP currency
     egp_indicators = ['egypt', 'egyptian', 'egp', 'مصر', 'مصري', 'جنيه', 'le', 'l.e.', 'pound']
     for i in range(len(df)):
@@ -478,6 +486,8 @@ def extract_currency(df):
                 # Check the cell itself
                 if 'usd' in cell or 'dollar' in cell or '$' in cell:
                     return 'USD'
+                if 'eur' in cell or 'euro' in cell or '€' in cell:
+                    return 'EUR'
                 if 'egp' in cell or 'egypt' in cell:
                     return 'EGP'
 
@@ -486,6 +496,8 @@ def extract_currency(df):
                     right_cell = str(df.iloc[i, j + 1]).lower()
                     if right_cell == 'usd' or right_cell == 'dollar' or right_cell == '$':
                         return 'USD'
+                    if right_cell == 'eur' or right_cell == 'euro' or right_cell == '€':
+                        return 'EUR'
                     if right_cell == 'egp' or right_cell == 'egypt':
                         return 'EGP'
 
