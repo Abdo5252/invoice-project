@@ -60,12 +60,14 @@ if uploaded_messy_file:
 
                     for invoice in processed_data:
                         # Add header row
-                        # Set exchange rate based on currency: 52 for USD, 0 for others
+                        # Set exchange rate based on currency: 52 for USD, 60 for EUR, 0 for others
                         currency = invoice.get('currency', '')
                         exchange_rate = "0"  # Default exchange rate
                         
                         if currency == 'USD':
                             exchange_rate = "52"
+                        elif currency == 'EUR':
+                            exchange_rate = "60"
                         
                         # Get current date for document date
                         current_date = datetime.now().strftime("%m/%d/%Y")
@@ -188,7 +190,7 @@ with st.expander("About this app"):
     - **Invoice Number:** Found after "INVOICE N:" keywords with format SIxxxxx
     - **Document Date:** Extracted in MM/DD/YYYY format (example: 4/16/2025)
     - **Customer Code:** Found near "partner code:" with format Cxxxx
-    - **Currency:** Standardized as EGP or USD based on content
+    - **Currency:** Standardized as EGP, USD, or EUR based on content
     - **Product Details:** Extracted from tables with both Arabic and English headers:
         - Description (التسمية or Description)
         - Quantity (الكمية or Quantity)
